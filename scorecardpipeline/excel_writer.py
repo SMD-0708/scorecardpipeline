@@ -119,6 +119,21 @@ class ExcelWriter:
 
         worksheet.freeze_panes = space
 
+    def add_auto_filter(self, worksheet, ref=None):
+        """
+        给工作表添加自动筛选（auto_filter）
+
+        :param worksheet: 当前选择添加自动筛选的sheet
+        :param ref: 筛选区域，如"A1:E10"，默认为整个有数据的区域
+        """
+        if not isinstance(worksheet, Worksheet):
+            worksheet = self.get_sheet_by_name(worksheet)
+
+        if ref is None:
+            worksheet.auto_filter.ref = worksheet.dimensions
+        else:
+            worksheet.auto_filter.ref = ref
+
     def dataframe_plot(self, df, row_height=0.4, font_size=14, header_color=None, row_colors=None, edge_color='w', save=None, **kwargs):
         """将 DataFrame 以表格图片形式保存
 
@@ -805,7 +820,7 @@ class ExcelWriter:
             self.workbook.close()
 
 
-def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True, theme_color="2639E9", condition_color=None, fill=True, percent_cols=None, condition_cols=None, custom_cols=None, custom_format="#,##0", color_cols=None, percent_rows=None, condition_rows=None, custom_rows=None, color_rows=None, start_col=2, start_row=2, mode="replace", figures=None, figsize=(600, 350), writer_params={}, **kwargs):
+def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True, theme_color="2639E9", condition_color=None, fill=True, percent_cols=None, condition_cols=None, custom_cols=None, custom_format="#,##0", color_cols=None, percent_rows=None, condition_rows=None, custom_rows=None, color_rows=None, left_cols=None, right_cols=None, start_col=2, start_row=2, mode="replace", figures=None, figsize=(600, 350), image_bottom_padding_rows=1, writer_params={}, auto_filter=False, **kwargs):
     """
     向excel文件中插入指定样式的dataframe数据
 
@@ -824,10 +839,16 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
     :param color_cols: 需要显示为条件格式颜色填充的列（单元格填充渐变色）
     :param custom_cols: 需要显示自定义格式的列，与 custom_format 参数搭配使用
     :param custom_format: 显示的自定义格式，与 custom_cols 参数搭配使用，默认 #,##0 ，即显示为有分隔符的整数
+    :param left_cols: 需要左对齐的列名或列索引列表，默认为None（数据行，非表头）
+    :param right_cols: 需要右对齐的列名或列索引列表，默认为None（数据行，非表头）
     :param start_col: 在excel中的开始列数，默认 2，即第二列开始
     :param start_row: 在excel中的开始行数，默认 2，即第二行开始，如果 title 有值的话，会从 start_row + 2 行开始插入dataframe数据
     :param mode: excel写入的模式，可选 append 和 replace ，默认 replace ，选择 append 时会在已有的excel文件中增加内容，不覆盖原有内容
+    :param figures: 需要数据表与标题之间插入的图片，支持一次性传入多张图片的路径，会根据传入顺序依次插入
+    :param figsize: 插入图像的大小，为了统一排版，目前仅支持设置一个图片大小，默认: (600, 350) (长度, 高度)
+    :param image_bottom_padding_rows: 图片区与下方表格之间的额外空行数，默认为1
     :param writer_params: 透传至 ExcelWriter 内的参数
+    :param auto_filter: 是否添加自动筛选功能，默认为False
     :param **kwargs: 其他参数，透传至 insert_df2sheet 方法，例如 传入 auto_width=True 会根据内容自动调整列宽
 
     :return: 返回插入元素最后一列之后、最后一行之后的位置
@@ -893,12 +914,17 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
         if isinstance(figures, str):
             figures = [figures]
 
-        pic_row = start_row
-        for i, pic in enumerate(figures):
-            if i == 0:
-                start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, start_col), figsize=figsize)
-            else:
-                start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, end_col - 1), figsize=figsize)
+        figures = [pic for pic in figures if pic]
+
+        if figures:
+            pic_row = start_row
+            for i, pic in enumerate(figures):
+                if i == 0:
+                    start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, start_col), figsize=figsize)
+                else:
+                    start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, end_col - 1), figsize=figsize)
+
+            start_row += image_bottom_padding_rows
 
     if "merge_column" in kwargs and kwargs["merge_column"]:
         if not isinstance(kwargs["merge_column"][0], (tuple, list)):
@@ -980,8 +1006,57 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
                 import traceback
                 traceback.print_exc()
 
+    # 应用自定义列对齐（仅数据行，非表头）
+    if left_cols or right_cols:
+        # 计算表头行数（1行或 MultiIndex 层数）
+        n_header_rows = data.columns.nlevels if header else 0
+        data_start_row = start_row + n_header_rows
+        data_end_row = end_row - 1
+
+        # index 列的层数
+        idx_levels = data.index.nlevels if kwargs.get("index", False) else 0
+
+        # 解析 left_cols / right_cols → DataFrame 列索引集合
+        def _resolve_col_items(items, df_cols):
+            result = set()
+            if not items:
+                return result
+            for c in items:
+                if isinstance(c, int):
+                    if 0 <= c < len(df_cols):
+                        result.add(c)
+                elif isinstance(c, str):
+                    try:
+                        loc = df_cols.get_loc(c)
+                        if isinstance(loc, int):
+                            result.add(loc)
+                        else:
+                            result.update(range(loc.start, loc.stop))
+                    except Exception:
+                        pass
+            return result
+
+        left_idx_set = _resolve_col_items(left_cols, data.columns)
+        right_idx_set = _resolve_col_items(right_cols, data.columns)
+
+        for col_idx in (left_idx_set | right_idx_set):
+            horiz = "left" if col_idx in left_idx_set else "right"
+            excel_col = start_col + col_idx + idx_levels
+            col_letter = get_column_letter(excel_col)
+            for row in range(data_start_row, data_end_row + 1):
+                cell = worksheet[f"{col_letter}{row}"]
+                cell.alignment = Alignment(horizontal=horiz, vertical="center")
+
     if not isinstance(excel_writer, ExcelWriter) and not isinstance(sheet_name, Worksheet):
         writer.save(excel_writer)
+
+    if auto_filter:
+        last_data_row = end_row - 1
+        last_data_col = end_col - 1
+        writer.add_auto_filter(
+            worksheet,
+            f"{get_column_letter(start_col)}{start_row}:{get_column_letter(last_data_col)}{last_data_row}"
+        )
 
     return end_row, end_col
 

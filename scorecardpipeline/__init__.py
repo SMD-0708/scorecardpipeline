@@ -16,6 +16,7 @@ from .model import ITLubberLogisticRegression, ScoreCard
 from .excel_writer import ExcelWriter, dataframe2excel
 from .auto_eda import auto_eda_sweetviz
 from .auto_report import auto_data_testing_report
+from .model_report import QuickModelReport, auto_model_report
 from .rule import Rule, ruleset_report, sawpin_badrate_prediction_by_score, bin_table_badrate_prediction
 from .rule_extraction import DecisionTreeRuleExtractor
 from .feature_engineering import NumExprDerive
@@ -33,7 +34,7 @@ __all__ = (
     , "ColorScaleRule", "get_column_letter", "column_index_from_string", "seed_everything"
     , "feature_bins", "feature_bin_stats", "feature_efficiency_analysis", "extract_feature_bin", "inverse_feature_bins", "sample_lift_transformer", "feature_describe", "groupby_feature_describe"
     , "bin_plot", "corr_plot", "ks_plot", "hist_plot", "psi_plot", "csi_plot", "dataframe_plot", "distribution_plot"
-    , "ExcelWriter", "dataframe2excel", "auto_eda_sweetviz", "auto_data_testing_report"
+    , "ExcelWriter", "dataframe2excel", "auto_eda_sweetviz", "auto_data_testing_report", "QuickModelReport", "auto_model_report"
     , "RFE", "RFECV", "SelectKBest", "SelectFromModel", "GenericUnivariateSelect", "NumExprDerive"
     , "StandardScoreTransformer", "NPRoundStandardScoreTransformer", "RoundStandardScoreTransformer", "BoxCoxScoreTransformer"
     , "TypeSelector", "RegexSelector", "ModeSelector", "NullSelector", "InformationValueSelector", "LiftSelector"
