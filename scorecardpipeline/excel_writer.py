@@ -119,6 +119,27 @@ class ExcelWriter:
 
         worksheet.freeze_panes = space
 
+    def dataframe_plot(self, df, row_height=0.4, font_size=14, header_color=None, row_colors=None, edge_color='w', save=None, **kwargs):
+        """将 DataFrame 以表格图片形式保存
+
+        :param df: 需要绘制为图片的 DataFrame
+        :param row_height: 行高，默认 0.4
+        :param font_size: 字体大小，默认 14
+        :param header_color: 标题行颜色，默认与 theme_color 一致
+        :param row_colors: 行颜色，默认 ['#dae3f3', 'w']，交替使用两种颜色
+        :param edge_color: 表格边框颜色，默认白色
+        :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+        :param kwargs: dataframe_plot 相关参数
+
+        :return: matplotlib Figure
+        """
+        from .utils import dataframe_plot as _dataframe_plot
+        if header_color is None:
+            header_color = f"#{self.theme_color}"
+        if row_colors is None:
+            row_colors = ['#dae3f3', 'w']
+        return _dataframe_plot(df, row_height=row_height, font_size=font_size, header_color=header_color, row_colors=row_colors, edge_color=edge_color, save=save, **kwargs)
+
     def get_sheet_by_name(self, name):
         """
         获取sheet名称为name的工作簿，如果不存在，则从初始模版文件中拷贝一个名称为name的sheet

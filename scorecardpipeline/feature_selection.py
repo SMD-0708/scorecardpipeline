@@ -51,7 +51,64 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
     def transform(self, x):
         check_is_fitted(self, "select_columns")
         return x[[col for col in self.select_columns if col in x.columns]]
-    
+
+    def plot(self, save=None, figsize=(12, 6), top_k=20, fontsize=12):
+        """将特征筛选的分数和剔除原因以表格图片形式保存
+
+        :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+        :param figsize: 图片大小，默认 (12, 6)
+        :param top_k: 仅展示分数最高的 top_k 个特征，默认 20
+        :param fontsize: 字体大小，默认 12
+
+        :return: matplotlib Figure
+        """
+        from .utils import dataframe_plot
+        check_is_fitted(self, "scores_")
+
+        import matplotlib.pyplot as plt
+
+        scores = self.scores_.sort_values(ascending=True).tail(top_k)
+
+        fig, axes = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': [2, 1]})
+        fig.suptitle(f"{self.__class__.__name__} Feature Selection Scores", fontsize=fontsize + 2)
+
+        ax1 = axes[0]
+        ax1.barh(scores.index, scores.values, color='#4472C4', alpha=0.8)
+        ax1.set_xlabel("Score", fontsize=fontsize)
+        ax1.set_title("Feature Scores", fontsize=fontsize)
+        ax1.tick_params(axis='y', labelsize=fontsize - 2)
+
+        ax2 = axes[1]
+        ax2.axis('off')
+        if self.dropped is not None and len(self.dropped) > 0:
+            dropped_subset = self.dropped.head(top_k).rename(columns={"variable": "Variable", "rm_reason": "Removed Reason"})
+            tbl = ax2.table(
+                cellText=dropped_subset.values,
+                colLabels=dropped_subset.columns,
+                loc='center',
+                cellLoc='center',
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(fontsize - 2)
+            tbl.scale(1.2, 1.5)
+            for (r, c), cell in tbl.get_celld().items():
+                if r == 0:
+                    cell.set_facecolor('#F76E6C')
+                    cell.set_text_props(color='white', fontsize=fontsize - 2)
+                else:
+                    cell.set_facecolor('#FFF2CC')
+            ax2.set_title("Removed Features", fontsize=fontsize, pad=10)
+
+        plt.tight_layout()
+
+        if save:
+            import os
+            if os.path.dirname(save) != "" and not os.path.exists(os.path.dirname(save)):
+                os.makedirs(os.path.dirname(save), exist_ok=True)
+            fig.savefig(save, dpi=150, format="png", bbox_inches="tight")
+
+        return fig
+
     def __call__(self, *args, **kwargs):
         self.fit(*args, **kwargs)
         return self.select_columns
@@ -600,7 +657,8 @@ def _psi_score(expected, actual):
 
 def PSI(train, test, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
     parallel = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
-    scores = parallel(delayed(_psi_score)(train[:, i], test[:,i]) for i in range(len(train.columns)))
+    n_cols = train.shape[1] if hasattr(train, 'shape') else len(train.columns)
+    scores = parallel(delayed(_psi_score)(train.iloc[:, i] if hasattr(train, 'iloc') else train[:, i], test.iloc[:, i] if hasattr(test, 'iloc') else test[:, i]) for i in range(n_cols))
     return scores
 
 

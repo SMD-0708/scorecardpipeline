@@ -180,7 +180,16 @@ def feature_describe(data, feature=None, percentiles=None, missing=None, cardina
         return pd.Series(describe, name=feature).reindex(['样本数', '非空数', '查得率', '最小值', '平均值'] + [f"{int(i * 100)}%" for i in percentiles] + ['最大值'])
 
 
-def groupby_feature_describe(data, by=None, n_jobs=-1, **kwargs):
+def groupby_feature_describe(data, by=None, n_jobs=-1, save=None, **kwargs):
+    """按指定字段分组后对各数值列进行统计描述
+
+    :param data: 数据集，pd.DataFrame
+    :param by: 分组字段，支持单字段或字段列表，默认 None
+    :param n_jobs: 并行任务数，默认 -1（使用全部 CPU）
+    :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+    :param kwargs: dataframe_plot 相关的参数
+    :return: pd.DataFrame，统计描述结果；如果传入了 save，则同时保存图片
+    """
     if not isinstance(by, (tuple, list, np.ndarray)):
         by = [by]
 
@@ -206,6 +215,9 @@ def groupby_feature_describe(data, by=None, n_jobs=-1, **kwargs):
         describe.columns = pd.MultiIndex.from_tuples(describe.columns)
 
     describe.index.names = ["特征名称", "统计指标"]
+
+    if save:
+        dataframe_plot(describe, save=save, **kwargs)
 
     return describe
 

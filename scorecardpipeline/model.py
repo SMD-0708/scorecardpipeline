@@ -439,6 +439,62 @@ class ScoreCard(toad.ScoreCard, TransformerMixin):
         )
         return scorecard_kedu
 
+    def plot_report(self, save=None, figsize=(14, 8), fontsize=12):
+        """将评分卡刻度表和分箱分数表保存为图片
+
+        :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+        :param figsize: 图片大小，默认 (14, 8)
+        :param fontsize: 字体大小，默认 12
+
+        :return: matplotlib Figure
+        """
+        from .utils import dataframe_plot
+        import matplotlib.pyplot as plt
+
+        card_scale = self.scorecard_scale()
+        card_points = self.scorecard_points().head(5)
+
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+        axes[0].axis('off')
+        axes[0].set_title("评分卡刻度表", fontsize=fontsize + 2, pad=10)
+        table_data = [[r.get("刻度项", ""), r.get("刻度值", ""), r.get("备注", "")] for _, r in card_scale.iterrows()]
+        tbl1 = axes[0].table(cellText=table_data, colLabels=["刻度项", "刻度值", "备注"], loc='center', cellLoc='center')
+        tbl1.auto_set_font_size(False)
+        tbl1.set_fontsize(fontsize)
+        tbl1.scale(1.2, 1.5)
+        for (r, c), cell in tbl1.get_celld().items():
+            if r == 0:
+                cell.set_facecolor('#4472C4')
+                cell.set_text_props(color='white', fontsize=fontsize)
+            else:
+                cell.set_facecolor('#D9E1F2')
+
+        axes[1].axis('off')
+        axes[1].set_title("分箱分数表（部分）", fontsize=fontsize + 2, pad=10)
+        table_data2 = [[r.get("变量名", ""), str(r.get("分箱", "")), str(r.get("对应分数", ""))] for _, r in card_points.iterrows()]
+        tbl2 = axes[1].table(cellText=table_data2, colLabels=["变量名", "分箱", "对应分数"], loc='center', cellLoc='center')
+        tbl2.auto_set_font_size(False)
+        tbl2.set_fontsize(fontsize)
+        tbl2.scale(1.5, 1.5)
+        for (r, c), cell in tbl2.get_celld().items():
+            if r == 0:
+                cell.set_facecolor('#4472C4')
+                cell.set_text_props(color='white', fontsize=fontsize)
+            else:
+                cell.set_facecolor('#D9E1F2')
+
+        fig.suptitle("评分卡报告", fontsize=fontsize + 4)
+        plt.tight_layout()
+
+        if save:
+            import os
+            if os.path.dirname(save) != "" and not os.path.exists(os.path.dirname(save)):
+                os.makedirs(os.path.dirname(save), exist_ok=True)
+            fig.savefig(save, dpi=150, format="png", bbox_inches="tight")
+
+        return fig
+
     @classmethod
     def format_bins(self, bins, index=False, ellipsis=None, decimal=4):
         """分箱转换为标签

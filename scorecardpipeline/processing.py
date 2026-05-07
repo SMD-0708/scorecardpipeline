@@ -982,6 +982,20 @@ class WOETransformer(TransformerMixin, BaseEstimator):
         self.transformer.load(from_json)
         return self
 
+    def plot(self, x, head=10, save=None, **kwargs):
+        """将 WOE 转换后的数据以表格图片形式保存
+
+        :param x: 需要绘制的数据，通常为 WOE 转换后的 DataFrame
+        :param head: 只绘制前 head 行，默认 10
+        :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+        :param kwargs: dataframe_plot 相关的参数
+
+        :return: Figure
+        """
+        from .utils import dataframe_plot
+        sample = x.head(head)
+        return dataframe_plot(sample, save=save, **kwargs)
+
     @property
     def rules(self):
         """dict，特征 WOE 明细信息"""
@@ -1007,7 +1021,7 @@ class WOETransformer(TransformerMixin, BaseEstimator):
         return iter(self.transformer._rules)
 
 
-def feature_efficiency_analysis(data, feature, overdue=["MOB1"], dpd=[7, 3, 0], greater_is_better="auto", verbose=True, ks=False, **kwargs):
+def feature_efficiency_analysis(data, feature, overdue=["MOB1"], dpd=[7, 3, 0], greater_is_better="auto", verbose=True, ks=False, save=None, **kwargs):
     auto_feature_tables = feature_bin_stats(
         data
         , feature
@@ -1030,7 +1044,7 @@ def feature_efficiency_analysis(data, feature, overdue=["MOB1"], dpd=[7, 3, 0], 
     )
 
     if ks:
-        ks_plot(data.dropna(subset=[feature])[feature], (data.dropna(subset=[feature])[overdue[0]] > dpd[0]).astype(int), figsize=(10, 6))
+        ks_plot(data.dropna(subset=[feature])[feature], (data.dropna(subset=[feature])[overdue[0]] > dpd[0]).astype(int), figsize=(10, 6), save=save)
 
     if verbose:
         from IPython.display import display

@@ -18,6 +18,7 @@ from sklearn.metrics import f1_score, recall_score, accuracy_score, precision_sc
 
 from .processing import feature_bin_stats, Combiner
 from .excel_writer import dataframe2excel
+from .utils import dataframe_plot
 
 
 def _get_context(X, feature_names):
@@ -277,6 +278,26 @@ class Rule:
             raise RuleUnAppliedError("Invoke `predict` to make a rule applied.")
         return self.result_
 
+    def plot(self, datasets: pd.DataFrame, target="target", overdue=None, dpd=None, del_grey=False, desc="", filter_cols=None, prior_rules=None, amount=None, save=None, **kwargs):
+        """将规则效果报告保存为图片
+
+        :param datasets: 数据集，需要包含 目标变量 或 逾期天数，当不包含目标变量时，会通过逾期天数计算目标变量，同时需要传入逾期定义的DPD天数
+        :param target: 目标变量名称，默认 target
+        :param desc: 规则相关的描述，会出现在返回的表格当中
+        :param filter_cols: 指定返回的字段列表，默认不传
+        :param prior_rules: 先验规则，可以传入先验规则先筛选数据后再评估规则效果
+        :param overdue: 逾期天数字段名称
+        :param dpd: 逾期定义方式，逾期天数 > DPD 为 1，其他为 0，仅 overdue 字段起作用时有用
+        :param del_grey: 是否删除逾期天数 (0, dpd] 的数据，仅 overdue 字段起作用时有用
+        :param amount: 默认为空, 支持传入数值字段（通常为放款金额）, 在分析逾期率时，输出对应的分析结果
+        :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+        :param kwargs: dataframe_plot 相关的参数
+
+        :return: Figure
+        """
+        report = self.report(datasets=datasets, target=target, overdue=overdue, dpd=dpd, del_grey=del_grey, desc=desc, filter_cols=filter_cols, prior_rules=prior_rules, amount=amount, **kwargs)
+        return dataframe_plot(report, save=save, **kwargs)
+
     def __eq__(self, other):
         if not isinstance(other, Rule):
             raise TypeError(f"Input should be of type Rule, got {type(other)} instead.")
@@ -472,7 +493,7 @@ class Rule:
         return end_row, end_col
 
 
-def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", overdue=None, dpd=None, filter_cols=None, **kwargs) -> pd.DataFrame:
+def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", overdue=None, dpd=None, filter_cols=None, save=None, **kwargs) -> pd.DataFrame:
     datasets = datasets.copy()
 
     feature_names_missing = set([f for rule in rules for f in rule.feature_names_in_]) - set(datasets.columns)
@@ -482,21 +503,29 @@ def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", o
     report = pd.DataFrame()
 
     table_total = reduce(lambda r1, r2: r1 | r2, rules).report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=True, **kwargs)
-    table_total[("规则详情", "分箱")] = ["汇总", "剩余样本", "原始样本"]
-    table_total = table_total.drop(columns=[("规则详情", "规则分类"), ("规则详情", "指标名称")])
+    # Normalize to flat columns (not MultiIndex) for consistent processing
+    if isinstance(table_total.columns, pd.MultiIndex):
+        table_total.columns = ['_'.join(str(c).strip() for c in cols) for cols in table_total.columns]
+    table_total = table_total.drop(columns=["分箱"], errors="ignore")
+    table_total["分箱"] = ["汇总", "剩余样本", "原始样本"]
 
-    report = pd.concat([report, table_total.loc[table_total[("规则详情", "分箱")] == "原始样本", :]])
+    report = pd.concat([report, table_total.loc[table_total["分箱"] == "原始样本", :]])
 
     for rule in rules:
         table = rule.report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=False, **kwargs)
-        table[("规则详情", "分箱")] = [rule.expr, "剩余样本"]
-        table = table.drop(columns=[("规则详情", "规则分类"), ("规则详情", "指标名称")])
+        if isinstance(table.columns, pd.MultiIndex):
+            table.columns = ['_'.join(str(c).strip() for c in cols) for cols in table.columns]
+        table = table.drop(columns=["分箱"], errors="ignore")
+        table["分箱"] = [rule.expr, "剩余样本"]
 
         report = pd.concat([report, table])
 
         datasets = datasets[~rule.predict(datasets)]
 
-    report = pd.concat([report, table_total.loc[table_total[("规则详情", "分箱")] == "汇总", :]]).reset_index(drop=True)
+    report = pd.concat([report, table_total.loc[table_total["分箱"] == "汇总", :]]).reset_index(drop=True)
+
+    if save:
+        dataframe_plot(report, save=save, **kwargs)
 
     return report
 
