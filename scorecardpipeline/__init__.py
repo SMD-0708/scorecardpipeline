@@ -30,7 +30,7 @@ __all__ = (
     , "FeatureSelection", "FeatureImportanceSelector", "StepwiseSelection", "Combiner", "WOETransformer"
     , "ITLubberLogisticRegression", "ScoreCard", "Rule", "DecisionTreeRuleExtractor", "ruleset_report", "sawpin_badrate_prediction_by_score", "bin_table_badrate_prediction"
     , "Pipeline", "KS", "AUC", "PSI", "F1", "FeatureUnion", "make_pipeline", "make_union"
-    , "init_logger", "init_setting", "load_pickle", "save_pickle", "germancredit"
+    , "init_logger", "init_setting", "init_font_for_excel", "get_excel_font_name", "load_pickle", "save_pickle", "germancredit"
     , "ColorScaleRule", "get_column_letter", "column_index_from_string", "seed_everything"
     , "feature_bins", "feature_bin_stats", "feature_efficiency_analysis", "extract_feature_bin", "inverse_feature_bins", "sample_lift_transformer", "feature_describe", "groupby_feature_describe", "feature_summary"
     , "bin_plot", "corr_plot", "ks_plot", "hist_plot", "psi_plot", "csi_plot", "dataframe_plot", "distribution_plot"

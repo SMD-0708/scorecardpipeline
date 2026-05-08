@@ -32,6 +32,68 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score
 from .logger import init_logger
 
 
+def get_system_font_name(font_path=None, fallback="楷体"):
+    """获取可用于 openpyxl Font 的系统字体名称。
+
+    优先级：1) 传入路径对应字体已在系统字体库中  2) font_path 文件注册后得到的字体名  3) fallback
+
+    :param font_path: 字体文件路径或系统字体名，默认使用 scorecardpipeline 的 matplot_chinese.ttf
+    :param fallback: 所有方案都失败时使用的字体名，默认 楷体（Windows/Linux/跨平台均可用）
+    :return: str，可用于 openpyxl.styles.Font(name=...) 的字体名
+    """
+    import sys
+
+    default_font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matplot_chinese.ttf")
+    font_path = font_path or default_font_path
+
+    # 1. 直接是系统已存在的字体名
+    existing = [f.name.lower() for f in font_manager.fontManager.ttflist]
+    if font_path.lower() in existing:
+        return font_path
+
+    # 2. 字体文件注册后取字体名
+    if os.path.isfile(font_path):
+        font_manager.fontManager.addfont(font_path)
+        registered = [f for f in font_manager.fontManager.ttflist if os.path.normpath(os.path.abspath(f.fname)) == os.path.normpath(os.path.abspath(font_path))]
+        if registered:
+            return registered[0].name
+        # addfont 成功但 name 提取失败，尝试从文件路径提取（部分平台有效）
+        name = os.path.splitext(os.path.basename(font_path))[0]
+        if name and name.lower() in existing:
+            return name
+
+    # 3. fallback
+    return fallback
+
+
+# 全局字体名，供 excel_writer.py 使用（延迟初始化，调用 init_font_for_excel 后有效）
+_excel_font_name: str = None
+
+
+def init_font_for_excel(font_path=None, fallback="楷体"):
+    """初始化中文字体，供 ExcelWriter 使用（权限最小方案）。
+
+    通过 font_manager 将字体文件注册到 matplotlib 字体库（无需系统权限），
+    openpyxl 使用 Font(name=...) 时会从系统字体库查找，matplotlib 字体库会被搜索，
+    因此注册后 openpyxl 也能使用该字体。跨平台：Windows / Linux / macOS 均有效。
+
+    :param font_path: 字体文件路径或系统字体名，默认使用 scorecardpipeline 的 matplot_chinese.ttf
+    :param fallback: 所有方案都失败时使用的字体名，默认 楷体
+    :return: str，实际使用的字体名
+    """
+    global _excel_font_name
+    _excel_font_name = get_system_font_name(font_path, fallback)
+    return _excel_font_name
+
+
+def get_excel_font_name():
+    """获取已注册的 Excel 字体名，未初始化时自动使用默认值初始化。"""
+    global _excel_font_name
+    if _excel_font_name is None:
+        _excel_font_name = get_system_font_name()
+    return _excel_font_name
+
+
 def seed_everything(seed: int, freeze_torch=False):
     """
     固定当前环境随机种子，以保证后续实验可重复
@@ -90,6 +152,9 @@ def init_setting(font_path=None, seed=None, freeze_torch=False, logger=False, **
         plt.rcParams['font.family'] = font_manager.FontProperties(fname=font_path).get_name()
 
     plt.rcParams['axes.unicode_minus'] = False
+
+    # 同时注册字体供 ExcelWriter(openpyxl) 使用
+    init_font_for_excel(font_path)
 
     if seed:
         seed_everything(seed, freeze_torch=freeze_torch)
@@ -1175,7 +1240,7 @@ def feature_summary(
             mode_value = series.mode()
             result['众数'] = mode_value.iloc[0] if len(mode_value) > 0 else None
             result['众数频数'] = (series == result['众数']).sum() if result['众数'] is not None else 0
-            result['众数占比'] = round(result['众数频数'] / non_null * 100, 2) if non_null > 0 else 0
+            result['众数占比'] = result['众数频数'] if non_null > 0 else 0
         else:
             result['众数'] = None
             result['众数频数'] = 0
@@ -1185,9 +1250,9 @@ def feature_summary(
         if is_numeric:
             non_null_series = series.dropna()
             result['零值数'] = (non_null_series == 0).sum()
-            result['零值率'] = round(result['零值数'] / non_null * 100, 2) if non_null > 0 else 0
+            result['零值率'] = result['零值数'] if non_null > 0 else 0
             result['负值数'] = (non_null_series < 0).sum()
-            result['负值率'] = round(result['负值数'] / non_null * 100, 2) if non_null > 0 else 0
+            result['负值率'] = result['负值数'] if non_null > 0 else 0
         else:
             result['零值数'] = 0
             result['零值率'] = 0
@@ -1198,7 +1263,7 @@ def feature_summary(
         if non_null > 0:
             unique_count = series.nunique()
             result['重复数'] = non_null - unique_count
-            result['重复率'] = round(result['重复数'] / non_null * 100, 2)
+            result['重复率'] = result['重复数']
         else:
             result['重复数'] = 0
             result['重复率'] = 0

@@ -25,11 +25,12 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.formatting.rule import DataBarRule, ColorScaleRule
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.styles import NamedStyle, Border, Side, Alignment, PatternFill, Font
+from scorecardpipeline.utils import get_excel_font_name
 
 
 class ExcelWriter:
 
-    def __init__(self, style_excel=None, style_sheet_name="初始化", mode="replace", fontsize=10, font='楷体', theme_color='2639E9', opacity=0.85, system=None):
+    def __init__(self, style_excel=None, style_sheet_name="初始化", mode="replace", fontsize=10, font=None, theme_color='2639E9', opacity=0.85, system=None):
         """excel 写入方法
 
         :param style_excel: 样式模版文件，默认安装包路径下的 template.xlsx ，如果路径调整需要进行相应的调整
@@ -49,7 +50,7 @@ class ExcelWriter:
         self.english_width = 0.12
         self.chinese_width = 0.21
         self.mode = mode
-        self.font = font
+        self.font = font if font else get_excel_font_name()
         self.opacity = opacity
         self.fontsize = fontsize
         self.theme_color = theme_color

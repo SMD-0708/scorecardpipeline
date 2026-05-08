@@ -660,25 +660,63 @@ class QuickModelReport:
         if self._features_describe_cache is not None:
             return self._features_describe_cache.copy()
 
-        importance = self.get_feature_importance()
-        features = importance.index.tolist()
-        train_X = self._datasets["train"] if "train" in self._datasets else self._datasets[next(iter(self._datasets))].X[features] if features else self._datasets["train"] if "train" in self._datasets else self._datasets[next(iter(self._datasets))].X[self.feature_names]
-        desc_stats = train_X.describe(percentiles=[0.01, 0.1, 0.5, 0.75, 0.9, 0.99]).T
-        desc_stats = desc_stats.rename(columns={
-            "count": "样本数", "mean": "平均值", "std": "标准差",
-            "min": "最小值", "max": "最大值",
-            "1%": "1%", "10%": "10%", "50%": "50%",
-            "75%": "75%", "90%": "90%", "99%": "99%",
-        })
-        desc_stats["缺失率"] = train_X.isnull().mean()
-        desc_stats["字段类型"] = train_X.dtypes.astype(str)
-        desc_stats["枚举数"] = train_X.nunique()
+        from scorecardpipeline.utils import feature_summary
 
-        keep_cols = ["字段类型", "缺失率", "枚举数", "平均值", "标准差", "最小值", "1%", "10%", "50%", "75%", "90%", "99%", "最大值"]
-        keep_cols = [c for c in keep_cols if c in desc_stats.columns]
-        result = importance.join(desc_stats[keep_cols], how="left")
-        result = result.drop(columns=["样本数"], errors="ignore")
-        self._features_describe_cache = result
+        train_ds = self._datasets.get("train") or list(self._datasets.values())[0]
+        features = self.feature_names
+        if not features:
+            features = list(train_ds.X.columns)
+
+        df = train_ds.X[features].copy()
+        target_col = self._target_name
+        df[target_col] = train_ds.y.values
+
+        val_df = self._datasets.get("test")
+        val_X = val_df.X[features] if val_df is not None else None
+
+        summary_df = feature_summary(df, features=features, y=target_col, val_df=val_X)
+
+        coefs = None
+        if hasattr(self.model, "coef_"):
+            coefs = np.abs(self.model.coef_)
+            if len(coefs.shape) > 1:
+                coefs = coefs.mean(axis=0)
+        elif hasattr(self.model, "feature_importances_"):
+            coefs = self.model.feature_importances_
+
+        if coefs is not None:
+            feature_names_from_model = getattr(self.model, "feature_names_in_", None)
+            if feature_names_from_model is None and hasattr(self.model, "model"):
+                feature_names_from_model = getattr(self.model.model, "feature_names_in_", None)
+            if feature_names_from_model is not None and len(coefs) == len(feature_names_from_model):
+                imp = pd.Series(coefs, index=feature_names_from_model)
+            else:
+                imp = pd.Series(coefs, index=features[:len(coefs)] if len(coefs) <= len(features) else features)
+            total = imp.sum()
+            imp = imp / total if total else imp
+            imp.name = "特征重要性"
+
+            imp_df = imp.to_frame()
+            imp_df.index.name = "特征名"
+
+            summary_df = summary_df.set_index("特征名")
+            summary_df = imp_df.join(summary_df, how="right")
+            summary_df = summary_df.reset_index()
+
+        # 将特征重要性列插入到 IV 之前
+        if "特征重要性" in summary_df.columns:
+            iv_idx = None
+            for i, col in enumerate(summary_df.columns):
+                if col == "IV":
+                    iv_idx = i
+                    break
+            if iv_idx is not None:
+                cols = list(summary_df.columns)
+                cols.remove("特征重要性")
+                cols.insert(iv_idx - 1, "特征重要性")
+                summary_df = summary_df[cols]
+
+        self._features_describe_cache = summary_df
         return self._features_describe_cache.copy()
 
     # ---------- 特征相关性 ----------
@@ -690,8 +728,8 @@ class QuickModelReport:
         if not features:
             features = self.feature_names
 
-        # 获取数值型特征的相关系数矩阵，过滤非数值列
-        df = self._datasets["train"] if "train" in self._datasets else self._datasets[next(iter(self._datasets))].X[features].select_dtypes(include=[np.number])
+        train_ds = self._datasets.get("train") or list(self._datasets.values())[0]
+        df = train_ds.X[features].select_dtypes(include=[np.number])
         if df.shape[1] == 0:
             return pd.DataFrame()
         return df.corr()
@@ -1405,8 +1443,9 @@ class QuickModelReport:
         end_row, _ = dataframe2excel(
             features_summary, writer, sheet_name=ws,
             start_row=end_row + 1,
-            index=True,
             right_cols=[0],
+            percent_cols=['IV', 'KS', 'PSI', '缺失率', '众数占比', '零值率', '负值率', '重复率'],
+            condition_cols=['特征重要性'],
         )
 
         # 3.2 相关性
