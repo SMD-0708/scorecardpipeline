@@ -1586,7 +1586,7 @@ class QuickModelReport:
         if "train" in self._datasets and len(self._datasets) >= 2:
             end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{stab_section}、评分漂移分析（vs 训练集）", style="header_middle", align={"horizontal": "left"})
             drift_rows: List[Dict[str, Any]] = []
-            base_scores = self._datasets["train"] if "train" in self._datasets else self._datasets[next(iter(self._datasets))].score
+            base_scores = self._datasets["train"].score if "train" in self._datasets else self._datasets[next(iter(self._datasets))].score
             for ds_key, ds in self._datasets.items():
                 if ds_key == "train":
                     continue
