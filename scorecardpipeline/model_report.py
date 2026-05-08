@@ -596,42 +596,12 @@ class QuickModelReport:
 
             # 如果无法获取特征重要性，使用空 DataFrame
             if importances is None or len(importances) == 0:
-                self._importance_cache = pd.DataFrame(columns=["特征重要性", "IV", "KS", "PSI"])
+                self._importance_cache = pd.DataFrame(columns=["特征重要性"])
             else:
                 importance_df = pd.DataFrame(index=importances.index)
                 total = importances.sum()
                 importance_df["特征重要性"] = importances.values / total if total else importances.values
 
-                train_ds = self._datasets.get("train") or list(self._datasets.values())[0]
-                y_arr = train_ds.y.to_numpy()
-
-                iv_vals, ks_vals, psi_vals = [], [], []
-                for feat in importance_df.index:
-                    col = train_ds.X[feat] if feat in train_ds.X.columns else None
-                    if col is not None:
-                        try:
-                            iv_vals.append(self._calc_iv(y_arr, col))
-                        except Exception:
-                            iv_vals.append(np.nan)
-                        try:
-                            ks_vals.append(_ks(col, y_arr))
-                        except Exception:
-                            ks_vals.append(np.nan)
-                        if "test" in self._datasets and feat in self._datasets["test"].X.columns:
-                            try:
-                                psi_vals.append(_psi(col, self._datasets["test"].X[feat]))
-                            except Exception:
-                                psi_vals.append(np.nan)
-                        else:
-                            psi_vals.append(np.nan)
-                    else:
-                        iv_vals.append(np.nan)
-                        ks_vals.append(np.nan)
-                        psi_vals.append(np.nan)
-
-                importance_df["IV"] = iv_vals
-                importance_df["KS"] = ks_vals
-                importance_df["PSI"] = psi_vals
                 self._importance_cache = importance_df.sort_values("特征重要性", ascending=False)
 
         df = self._importance_cache.copy()

@@ -70,19 +70,103 @@ def get_system_font_name(font_path=None, fallback="楷体"):
 _excel_font_name: str = None
 
 
+def _install_system_font(font_path=None, fallback="楷体"):
+    """跨平台安装字体到系统字体库（权限最小），返回注册后的字体名。
+
+    安装策略（按顺序尝试）：
+    1. Windows: AddFontResourceW 注册到当前进程（无需管理员权限）+ 复制到用户字体目录
+    2. macOS: 复制到 ~/Library/Fonts
+    3. Linux: 复制到 ~/.local/share/fonts + fc-cache -f
+    4. 全部失败: 返回 fallback
+
+    :param font_path: 字体文件路径
+    :param fallback: fallback 字体名
+    :return: str，注册成功后的字体名，失败则返回 fallback
+    """
+    import sys
+    import shutil
+
+    default_font_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matplot_chinese.ttf")
+    font_path = font_path or default_font_path
+    if not os.path.isfile(font_path):
+        return fallback
+
+    font_name = os.path.splitext(os.path.basename(font_path))[0]
+    platform = sys.platform
+
+    # ---- Windows ----
+    if platform == "win32":
+        # 方案1: AddFontResourceW 仅注册到当前进程
+        try:
+            import ctypes
+            GWL_USER = -4
+            # 确保字体文件路径是绝对路径
+            abs_path = os.path.abspath(font_path)
+            if ctypes.windll.gdi32.AddFontResourceW(abs_path):
+                # 注册成功后通知所有窗口刷新字体
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    0xFFFF, 0x001D, 0, 0, 0x0002, 500, None
+                )
+                return font_name
+        except Exception:
+            pass
+
+        # 方案2: 复制到用户字体目录（无需管理员权限）
+        user_font_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")
+        if not user_font_dir or user_font_dir == "Microsoft\\Windows\\Fonts":
+            user_font_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Microsoft", "Windows", "Fonts")
+        try:
+            os.makedirs(user_font_dir, exist_ok=True)
+            dest = os.path.join(user_font_dir, os.path.basename(font_path))
+            shutil.copy2(font_path, dest)
+            # 再次 AddFontResourceW
+            try:
+                import ctypes
+                if ctypes.windll.gdi32.AddFontResourceW(os.path.abspath(dest)):
+                    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001D, 0, 0, 0x0002, 500, None)
+                    return font_name
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # ---- macOS ----
+    elif platform == "darwin":
+        user_font_dir = os.path.join(os.path.expanduser("~"), "Library", "Fonts")
+        try:
+            os.makedirs(user_font_dir, exist_ok=True)
+            dest = os.path.join(user_font_dir, os.path.basename(font_path))
+            shutil.copy2(font_path, dest)
+            return font_name
+        except Exception:
+            pass
+
+    # ---- Linux ----
+    elif platform.startswith("linux"):
+        user_font_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "fonts")
+        try:
+            os.makedirs(user_font_dir, exist_ok=True)
+            dest = os.path.join(user_font_dir, os.path.basename(font_path))
+            shutil.copy2(font_path, dest)
+            # 刷新字体缓存
+            import subprocess
+            subprocess.run(["fc-cache", "-f", user_font_dir], capture_output=True)
+            return font_name
+        except Exception:
+            pass
+
+    return fallback
+
+
 def init_font_for_excel(font_path=None, fallback="楷体"):
-    """初始化中文字体，供 ExcelWriter 使用（权限最小方案）。
+    """初始化中文字体，供 ExcelWriter 使用（权限最小方案，跨平台：Windows / Linux / macOS）。
 
-    通过 font_manager 将字体文件注册到 matplotlib 字体库（无需系统权限），
-    openpyxl 使用 Font(name=...) 时会从系统字体库查找，matplotlib 字体库会被搜索，
-    因此注册后 openpyxl 也能使用该字体。跨平台：Windows / Linux / macOS 均有效。
-
-    :param font_path: 字体文件路径或系统字体名，默认使用 scorecardpipeline 的 matplot_chinese.ttf
+    :param font_path: 字体文件路径，默认使用 scorecardpipeline 的 matplot_chinese.ttf
     :param fallback: 所有方案都失败时使用的字体名，默认 楷体
     :return: str，实际使用的字体名
     """
     global _excel_font_name
-    _excel_font_name = get_system_font_name(font_path, fallback)
+    _excel_font_name = _install_system_font(font_path, fallback)
     return _excel_font_name
 
 
@@ -90,7 +174,7 @@ def get_excel_font_name():
     """获取已注册的 Excel 字体名，未初始化时自动使用默认值初始化。"""
     global _excel_font_name
     if _excel_font_name is None:
-        _excel_font_name = get_system_font_name()
+        _excel_font_name = _install_system_font()
     return _excel_font_name
 
 

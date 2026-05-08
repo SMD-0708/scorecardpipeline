@@ -67,15 +67,16 @@ class StandardScoreTransformer(BaseScoreTransformer):
             raise ValueError("bad rate should be greater than e and less than 1!")
 
         base_odds = bad_rate / (1. - bad_rate)
+        B = self.pdo / np.log(self.rate)
         if self.greater_is_better:
-            B = self.pdo / np.log(self.rate)
+            sgn = -1
         else:
-            B = -self.pdo / np.log(self.rate)
-
-        A = base_score + B + np.log(base_odds)
+            sgn = 1
+        A = base_score + sgn * B * np.log(base_odds)
 
         self.A_ = A
         self.B_ = B
+        self.sgn_ = sgn
         self.base_odds = base_odds
         self.fitted_ = True
         return self
@@ -91,21 +92,21 @@ class StandardScoreTransformer(BaseScoreTransformer):
                 ["base_score", self.base_score, "基础ODDS对应的分数"],
                 ["rate", self.rate, "设置分数的倍率"],
                 ["pdo", self.pdo, "表示分数增长PDO时，ODDS值增长到RATE倍"],
-                ["B", self.A_, "补偿值，计算方式：pdo / ln(rate)"],
-                ["A", self.B_, "刻度，计算方式：base_score - B * ln(base_odds)"],
+                ["B", self.B_, "刻度，计算方式：pdo / ln(rate)"],
+                ["A", self.A_, "补偿值，计算方式：base_score - sgn * B * ln(base_odds)，其中 greater_is_better=True 时 sgn=-1，False 时 sgn=1"],
             ],
             columns=["刻度项", "刻度值", "备注"],
         )
         return scorecard_kedu
 
     def _transform(self, X):
-        check_is_fitted(self, ["A_", "B_"])
+        check_is_fitted(self, ["A_", "B_", "sgn_"])
         Xt = self._validate_data(X, reset=False, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         # if not np.all((0 <= Xt) & (Xt <= 1)):
         #     raise ValueError ("Input should be probabilities between 0 and 1.")
-        A, B = self.A_, self.B_
+        A, B, sgn = self.A_, self.B_, self.sgn_
         down_lmt, up_lmt = self.down_lmt, self.up_lmt
-        points = A - B * np.log(Xt / (1.0 - Xt))
+        points = A - sgn * B * np.log(Xt / (1.0 - Xt))
         points = np.clip(points, down_lmt, up_lmt)
         return points
 
@@ -132,13 +133,13 @@ class StandardScoreTransformer(BaseScoreTransformer):
             return (scores > cutoff).astype(np.int)
 
     def _inverse_transform(self, X):
-        check_is_fitted(self, ["A_", "B_"])
+        check_is_fitted(self, ["A_", "B_", "sgn_"])
         Xt = check_array(X, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         down_lmt, up_lmt = self.down_lmt, self.up_lmt
         if not np.all(np.logical_and((down_lmt <= Xt), (Xt <= up_lmt))):
             raise ValueError("Input should be points between {} and {}".format(down_lmt, up_lmt))
-        A, B = self.A_, self.B_
-        probs = 1.0 - 1.0 / (np.exp((A - Xt) / B) + 1.0)
+        A, B, sgn = self.A_, self.B_, self.sgn_
+        probs = 1.0 - 1.0 / (np.exp((A - Xt) / (sgn * B)) + 1.0)
         return probs
 
     def inverse_transform(self, X):
