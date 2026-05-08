@@ -9,6 +9,11 @@
 # - Ubuntu/Debian: sudo apt-get install libcairo2-dev
 # - macOS: brew install cairo
 # - Windows: 较难安装，需要从源码编译或使用 conda
+# 下载 GTK 3 Runtime for Windows（找 x64 的 all-in-one 版本）
+# 解压到某个目录（比如 C:\gtk）
+# 把 C:\gtk\bin 加入系统环境变量 PATH
+# 再执行：
+# pip install cairosvg pycairo --user
 CairoSVG>=2.7.0
 
 # 方案2: svglib + reportlab（纯Python实现，但功能较少）

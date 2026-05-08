@@ -17,7 +17,7 @@ def get_requirements(stage=None):
         file_name = f"{file_name}-{stage}"
 
     requirements = []
-    with open(f"{file_name}.txt", 'r') as f:
+    with open(f"{file_name}.txt", 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('-'):

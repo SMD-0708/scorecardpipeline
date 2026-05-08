@@ -47,6 +47,11 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
         self.scores_ = None
         self.dropped = None
         self.n_features_in_ = None
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        """sklearn 检查是否已拟合"""
+        return self.fitted_
 
     def transform(self, x):
         check_is_fitted(self, "select_columns")
@@ -114,7 +119,7 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
         return self.select_columns
 
     def fit(self, x, y=None):
-        pass
+        self.fitted_ = True
 
 
 class TypeSelector(SelectorMixin):
@@ -148,6 +153,7 @@ class TypeSelector(SelectorMixin):
             self.select_columns = list(set(self.select_columns + self.exclude))
         
         self.dropped = pd.DataFrame([(col, f"data type or name not match") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -178,6 +184,7 @@ class RegexSelector(SelectorMixin):
             self.select_columns = list(set(self.select_columns + self.exclude))
 
         self.dropped = pd.DataFrame([(col, f"feature name not match {self.pattern}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -225,6 +232,7 @@ class NullSelector(SelectorMixin):
             self.select_columns = list(set(self.select_columns + self.exclude))
 
         self.dropped = pd.DataFrame([(col, f"nan ratio >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -258,6 +266,7 @@ class ModeSelector(SelectorMixin):
             self.select_columns = list(set(self.select_columns + self.exclude))
 
         self.dropped = pd.DataFrame([(col, f"mode ratio >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -293,6 +302,7 @@ class CardinalitySelector(SelectorMixin):
             self.select_columns = list(set(self.select_columns + self.exclude))
 
         self.dropped = pd.DataFrame([(col, f"cardinality >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -375,6 +385,7 @@ class InformationValueSelector(SelectorMixin):
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ >= self.threshold]).index.tolist() + [self.target]))
         self.dropped = pd.DataFrame([(col, f"IV <= {self.threshold}") for col in xt.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -462,6 +473,7 @@ class LiftSelector(SelectorMixin):
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ >= self.threshold]).index.tolist() + [self.target]))
         self.dropped = pd.DataFrame([(col, f"LIFT < {self.threshold}") for col in xt.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
         return self
 
 
@@ -504,7 +516,7 @@ class VarianceSelector(SelectorMixin):
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ > self.threshold]).index.tolist() + self.exclude))
         self.dropped = pd.DataFrame([(col, f"Variance <= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
-        
+        self.fitted_ = True
         return self
 
 
@@ -550,7 +562,7 @@ class VIFSelector(SelectorMixin):
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ < self.threshold]).index.tolist() + self.exclude))
         self.dropped = pd.DataFrame([(col, f"VIF >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
-
+        self.fitted_ = True
         return self
 
 
@@ -634,7 +646,7 @@ class CorrSelector(SelectorMixin):
 
         self.dropped = pd.DataFrame([(col, f"corr > {self.threshold}") for col in corr.index[drops].values], columns=["variable", "rm_reason"])
         self.select_columns = list(set([c for c in x.columns if c not in corr.index[drops].values] + self.exclude))
-
+        self.fitted_ = True
         return self
 
 
@@ -709,7 +721,7 @@ class PSISelector(SelectorMixin):
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ >= self.threshold]).index.tolist() + self.exclude))
         self.dropped = pd.DataFrame([(col, f"PSI >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
-
+        self.fitted_ = True
         return self
 
 
@@ -795,6 +807,8 @@ class NullImportanceSelector(SelectorMixin):
         else:
             self.select_columns = list(set((self.scores_[self.scores_ > self.threshold]).index.tolist() + [self.target]))
             self.dropped = pd.DataFrame([(col, f"nullimportance <= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
+        self.fitted_ = True
+        return self
 
 
 class TargetPermutationSelector(NullImportanceSelector):
@@ -951,8 +965,9 @@ class ExhaustiveSelector(SelectorMixin, MetaEstimatorMixin):
             self.best_idx_ = best_idx
             self.best_score_ = score
             self.best_feature_indices_ = np.where(mask)[0]
+            self.fitted_ = True
             return self
-    
+
     def _get_support_mask(self):
         check_is_fitted(self, "support_mask_")
         return self.support_mask_

@@ -200,6 +200,10 @@ class FeatureSelection(TransformerMixin, BaseEstimator):
         self.target_rm = target_rm
         self.select_columns = None
         self.dropped = None
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        return self.fitted_
 
     def fit(self, x, y=None):
         """训练特征筛选方法
@@ -225,6 +229,7 @@ class FeatureSelection(TransformerMixin, BaseEstimator):
         if self.target_rm and self.target in self.select_columns:
             self.select_columns.remove(self.target)
 
+        self.fitted_ = True
         return self
 
     def transform(self, x, y=None):
@@ -269,6 +274,10 @@ class StepwiseSelection(TransformerMixin, BaseEstimator):
         self.exclude = exclude
         self.select_columns = None
         self.dropped = None
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        return self.fitted_
 
     def fit(self, x, y=None):
         """训练逐步回归特征筛选方法
@@ -288,10 +297,11 @@ class StepwiseSelection(TransformerMixin, BaseEstimator):
         if self.target_rm and self.target in self.select_columns:
             self.select_columns.remove(self.target)
 
+        self.fitted_ = True
         return self
 
     def transform(self, x, y=None):
-        """逐步回归特征筛选转换器
+        """逐步回归特征筛选转换方法
 
         :param x: 需要进行特征筛选的数据集
 
@@ -321,6 +331,10 @@ class FeatureImportanceSelector(BaseEstimator, TransformerMixin):
         self.low_importance_feature_names_ = None
         self.select_columns = None
         self.dropped = None
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        return self.fitted_
 
     def fit(self, x, y=None):
         """特征重要性筛选器训练
@@ -346,6 +360,7 @@ class FeatureImportanceSelector(BaseEstimator, TransformerMixin):
         else:
             pass
 
+        self.fitted_ = True
         return self
 
     def transform(self, x, y=None):
@@ -425,6 +440,10 @@ class Combiner(TransformerMixin, BaseEstimator):
         self.adj_rules = adj_rules
         self.n_jobs = n_jobs
         self.kwargs = kwargs
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        return self.fitted_
 
     def update(self, rules):
         """更新 Combiner 中特征的分箱规则
@@ -522,6 +541,7 @@ class Combiner(TransformerMixin, BaseEstimator):
 
         # 检查类别变量空值是否被转为字符串，如果转为了字符串，强制转回空值，同时检查分箱顺序并调整为正确顺序
         self.check_rules()
+        self.fitted_ = True
 
         return self
 
@@ -944,6 +964,11 @@ class WOETransformer(TransformerMixin, BaseEstimator):
         self.target = target
         self.exclude = exclude if isinstance(exclude, list) else [exclude] if exclude else []
         self.transformer = toad.transform.WOETransformer()
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        """sklearn 检查是否已拟合"""
+        return self.fitted_
 
     def fit(self, x, y=None):
         """WOE转换器训练
@@ -952,6 +977,7 @@ class WOETransformer(TransformerMixin, BaseEstimator):
         :return: WOETransformer，训练完成的WOE转换器
         """
         self.transformer.fit(x.drop(columns=self.exclude + [self.target]), x[self.target])
+        self.fitted_ = True
         return self
 
     def transform(self, x, y=None):

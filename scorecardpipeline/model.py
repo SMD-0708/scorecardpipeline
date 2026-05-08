@@ -18,7 +18,7 @@ from sklearn.metrics import classification_report
 from sklearn.utils._array_api import get_namespace
 from sklearn.utils.extmath import safe_sparse_dot
 from sklearn.linear_model import LogisticRegression
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_is_fitted, check_array
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
 
 from .utils import *
@@ -77,7 +77,19 @@ class ITLubberLogisticRegression(LogisticRegression):
         other_installment_plans                              0.8521   0.3459  2.4637 0.0138   0.1742   1.5301 1.0117
         housing                                              0.8251   0.4346  1.8983 0.0577  -0.0268   1.6770 1.0205
         """
-        super().__init__(penalty=penalty, dual=dual, tol=tol, C=C, fit_intercept=fit_intercept, intercept_scaling=intercept_scaling, class_weight=class_weight, random_state=random_state, solver=solver, max_iter=max_iter, multi_class=multi_class, verbose=verbose, warm_start=warm_start, n_jobs=n_jobs, l1_ratio=l1_ratio, )
+        # sklearn >= 1.6 移除了 multi_class 和 strategy 参数，多分类策略自动选择，无需显式指定
+        # 先检查 LogisticRegression.__init__ 的签名，支持哪种参数
+        import inspect
+        sig = inspect.signature(LogisticRegression.__init__)
+        params = list(sig.parameters.keys())
+        if 'strategy' in params:
+            super().__init__(penalty=penalty, dual=dual, tol=tol, C=C, fit_intercept=fit_intercept, intercept_scaling=intercept_scaling, class_weight=class_weight, random_state=random_state, solver=solver, max_iter=max_iter, strategy=multi_class, verbose=verbose, warm_start=warm_start, n_jobs=n_jobs, l1_ratio=l1_ratio)
+        elif 'multi_class' in params:
+            super().__init__(penalty=penalty, dual=dual, tol=tol, C=C, fit_intercept=fit_intercept, intercept_scaling=intercept_scaling, class_weight=class_weight, random_state=random_state, solver=solver, max_iter=max_iter, multi_class=multi_class, verbose=verbose, warm_start=warm_start, n_jobs=n_jobs, l1_ratio=l1_ratio)
+        else:
+            # sklearn 完全移除了多分类参数，使用默认行为
+            super().__init__(penalty=penalty, dual=dual, tol=tol, C=C, fit_intercept=fit_intercept, intercept_scaling=intercept_scaling, class_weight=class_weight, random_state=random_state, solver=solver, max_iter=max_iter, verbose=verbose, warm_start=warm_start, n_jobs=n_jobs, l1_ratio=l1_ratio)
+        self.multi_class = multi_class
         self.target = target
         self.calculate_stats = calculate_stats
 
@@ -93,7 +105,9 @@ class ITLubberLogisticRegression(LogisticRegression):
         x = x.drop(columns=[self.target])
 
         if not self.calculate_stats:
-            return super().fit(x, y, sample_weight=sample_weight, **kwargs)
+            lr = super().fit(x, y, sample_weight=sample_weight, **kwargs)
+            self.fitted_ = True
+            return lr
 
         x = self.convert_sparse_matrix(x)
 
@@ -113,7 +127,7 @@ class ITLubberLogisticRegression(LogisticRegression):
             x_design = x
 
         self.vif = [variance_inflation_factor(np.matrix(x_design), i) for i in range(x_design.shape[-1])]
-        p = np.product(predProbs, axis=1)
+        p = np.prod(predProbs, axis=1)
         self.cov_matrix_ = np.linalg.inv((x_design * p[..., np.newaxis]).T @ x_design)
         std_err = np.sqrt(np.diag(self.cov_matrix_)).reshape(1, -1)
 
@@ -141,6 +155,7 @@ class ITLubberLogisticRegression(LogisticRegression):
 
         self.z_coef_ = self.coef_ / self.std_err_coef_
         self.p_val_coef_ = scipy.stats.norm.sf(abs(self.z_coef_)) * 2
+        self.fitted_ = True
 
         return self
 
@@ -156,7 +171,7 @@ class ITLubberLogisticRegression(LogisticRegression):
             x = x.drop(columns=self.target)
 
         xp, _ = get_namespace(x)
-        x = self._validate_data(x, accept_sparse="csr", reset=False)
+        x = check_array(x, accept_sparse='csr', dtype="numeric")
         scores = safe_sparse_dot(x, self.coef_.T, dense_output=True) + self.intercept_
         return xp.reshape(scores, (-1,)) if scores.shape[1] == 1 else scores
 
@@ -360,6 +375,7 @@ class ScoreCard(toad.ScoreCard, TransformerMixin):
 
         sub_score = self.woe_to_score(x)
         self.base_effect = pd.Series(np.median(sub_score, axis=0), index=self.features_)
+        self.fitted_ = True
 
         return self
 

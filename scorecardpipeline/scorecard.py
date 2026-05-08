@@ -22,6 +22,10 @@ class BaseScoreTransformer(BaseEstimator, TransformerMixin):
         self.up_lmt = up_lmt
         self.greater_is_better = greater_is_better
         self.cutoff = cutoff
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        return self.fitted_
 
     @abstractmethod
     def predict(self, x):
@@ -73,6 +77,7 @@ class StandardScoreTransformer(BaseScoreTransformer):
         self.A_ = A
         self.B_ = B
         self.base_odds = base_odds
+        self.fitted_ = True
         return self
 
     def scorecard_scale(self):
@@ -204,6 +209,7 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
         for i, lmbda in enumerate(self.lambdas_):
             X[:, i] = stats.boxcox(X[:, i], lmbda)
         self.scaler_ = MinMaxScaler(feature_range=(self.down_lmt, self.up_lmt)).fit(X)
+        self.fitted_ = True
         return self
 
     def _transform(self, X):

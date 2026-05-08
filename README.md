@@ -2,7 +2,11 @@
 
 <img src="https://itlubber.art/upload/scorecardpipeline.png" alt="itlubber.png" width="100%" border=0/> 
 
-`scorecardpipeline`封装常用的风控策略分析和评分卡建模相关组件，API风格参考`sklearn`，支持`pipeline`式端到端评分卡建模、三方数据分析报告输出、规则集效果评估、特征有效性分析、`excel`报告输出、评分卡`PMML`文件导出、评分卡全流程超参数搜索等功能
+`scorecardpipeline` 封装常用的风控策略分析和建模组件，API 风格参考 `sklearn`，覆盖从特征筛选、分箱、WOE 编码到模型训练、评分卡生成、规则挖掘和分析、规则集SWAP分析、报告输出等完整策略分析和建模流程，支持端到端 Pipeline 串联和全流程超参数自动搜索。
+
+该包底层整合了 `toad`、`scorecardpy`、`optbinning` 三个主流评分卡库的核心能力，设计上遵循 `fit` + `transform` 范式，所有组件（分箱器、筛选器、LR 模型、规则器、评分卡等）均可直接放入 `Pipeline` 中串联使用，并支持 `GridSearchCV`、`Optuna`、`BayesOpt` 等工具对全流程参数进行自动化调优。同时针对报告输出做了统一封装和丰富增强——`ExcelWriter` 支持将文字、数据、图片、公式等内容直接插入 Excel 并自动应用精美样式，可将机构的策略分析或模型上线 SOP 固化为模板，每次填入数据即可快速产出规范的报告文件。
+
+> PS: 社区反馈安装门槛较高，底层各库版本要求各不相同。为解决这一问题，我们即将推出不依赖任何三方库的 [`hscredit`](https://github.com/hengshu-credit/hscredit) 一站式解决方案，支持`19种分箱方法`、`20+特征筛选器`、支持`最新python3.14`、极简依赖`无门槛安装`，覆盖从数据探索、策略分析到建模报告生成的全流程，欢迎提前 star 跟踪进度。
 
 > 教程：https://scorecardpipeline.itlubber.art
 > 
@@ -13,8 +17,12 @@
 > 博文地址：https://scorecardpipeline.itlubber.art/quickstart.html
 > 
 > 微信公共号推文：https://mp.weixin.qq.com/s/eCTp4h0fau77xOgf_V28wQ
+> 
+> hscredit：https://github.com/hengshu-credit/hscredit
 
-> PS: *新注册账号请勿 `star` 本项目*
+
+> PS: *新注册账号请勿 `star` 本项目* , 短期内 `scorecardpipeline` 将同步 `hscredit` 的功能，待 `hscredit` 成熟后，本项目将不再维护
+
 
 ## 交流
 

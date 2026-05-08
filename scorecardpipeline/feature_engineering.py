@@ -26,10 +26,16 @@ class NumExprDerive(BaseEstimator, TransformerMixin):
         :param derivings: list, default=None. Each entry is a (name, expr) pair representing a deriving rule.
         """
         self.derivings = derivings
+        self.fitted_ = False
+
+    def __sklearn_is_fitted__(self):
+        """sklearn 检查是否已拟合"""
+        return self.fitted_
 
     def fit(self, X, y=None):
         self._check_keywords()
         self._validate_data(X, dtype=None, ensure_2d=True, force_all_finite=False)
+        self.fitted_ = True
         return self
 
     def _check_keywords(self):

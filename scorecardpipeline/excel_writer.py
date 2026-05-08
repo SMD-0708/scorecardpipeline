@@ -302,7 +302,7 @@ class ExcelWriter:
         image.width, image.height = figsize
         worksheet.add_image(image, f"{start_col}{start_row}")
 
-        return start_row + int(figsize[1] / (16.0 if self.system != 'mac' else 17.5)), column_index_from_string(start_col) + 8
+        return start_row + int(figsize[1] / (16.0 if self.system != 'mac' else 17.5)), column_index_from_string(start_col) + 6
 
     def insert_rows(self, worksheet, row, row_index, col_index, merge_rows=None, style="", auto_width=False, style_only=False, multi_levels=False):
         """

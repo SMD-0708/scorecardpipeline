@@ -5,6 +5,7 @@
 @Site    : itlubber.art
 """
 import warnings
+from typing import List, Optional, Union
 
 warnings.filterwarnings("ignore")
 
@@ -377,7 +378,7 @@ def bin_plot(feature_table, desc="", figsize=(10, 6), colors=["#2639E9", "#F76E6
     """
     feature_table = feature_table.copy()
 
-    feature_table["分箱"] = feature_table["分箱"].apply(lambda x: x if not pd.isnull(x) and re.match("^\[.*\)$", x) else (str(x)[:max_len] + ".." if len(str(x)) > max_len else str(x)))
+    feature_table["分箱"] = feature_table["分箱"].apply(lambda x: x if not pd.isnull(x) and re.match(r"^\[.*\)$", x) else (str(x)[:max_len] + ".." if len(str(x)) > max_len else str(x)))
 
     fig, ax1 = plt.subplots(figsize=figsize)
     ax1.barh(feature_table['分箱'], feature_table['好样本数'], color=colors[0], label='好样本', hatch="/" if hatch else None)
@@ -1091,3 +1092,357 @@ def monotonic_bad_rate_binning(df, feature, target, target_rates, greater_is_bet
             continue
 
     return cutpoints
+
+
+def feature_summary(
+    df: pd.DataFrame,
+    features: List[str] = None,
+    y: Optional[str] = None,
+    val_df: Optional[pd.DataFrame] = None,
+    max_n_bins: int = 5,
+    psi_method: str = 'random_split',
+    psi_group_col: Optional[str] = None,
+    psi_date_col: Optional[str] = None,
+    psi_freq: str = 'M',
+    psi_test_size: float = 0.3,
+    percentiles: List[float] = None,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """综合特征描述统计.
+
+    整合特征基础统计、IV、KS、PSI，快速获取数据集特征详情。
+    参考 toad.detect + IV + KS + PSI 的功能组合。
+
+    :param df: 训练/基准数据集
+    :param features: 特征列表，None则分析全部（排除y列）
+    :param y: 目标变量列名，传入则计算IV/KS/趋势
+    :param val_df: 验证集，用于计算PSI，不传则使用psi_method指定的方式
+    :param max_n_bins: IV计算分箱数，默认5
+    :param psi_method: PSI计算方式
+        - 'random_split': 随机拆分两份数据计算PSI（默认）
+        - 'group_col': 按psi_group_col指定的分组列计算PSI
+        - 'date_col': 按psi_date_col指定的日期列分组计算PSI
+    :param psi_group_col: 分组列名（当psi_method='group_col'时使用）
+    :param psi_date_col: 日期列名（当psi_method='date_col'时使用）
+    :param psi_freq: 时间频率，'D'/'W'/'M'/'Q'，默认'M'
+    :param psi_test_size: 随机拆分比例（当psi_method='random_split'时使用），默认0.3
+    :param percentiles: 分位数点，默认[0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99]
+    :param random_state: 随机种子
+    :return: 综合特征描述DataFrame
+
+    Example:
+        >>> summary = feature_summary(df)
+        >>> summary = feature_summary(df, y='target')
+        >>> summary = feature_summary(df, y='target', psi_method='random_split')
+        >>> summary = feature_summary(df, y='target', psi_method='date_col', psi_date_col='apply_date')
+    """
+    if percentiles is None:
+        percentiles = [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99]
+
+    if features is None:
+        if y is not None and y in df.columns:
+            features = [c for c in df.columns if c != y]
+        else:
+            features = df.columns.tolist()
+        if len(features) == 0:
+            features = df.columns.tolist()
+
+    # 确保features在df中
+    features = [f for f in features if f in df.columns]
+    if len(features) == 0:
+        return pd.DataFrame()
+
+    total = len(df)
+    results = []
+
+    for feat in features:
+        series = df[feat]
+        non_null = series.notna().sum()
+        missing_rate = (total - non_null) / total
+        is_numeric = pd.api.types.is_numeric_dtype(series)
+
+        result = {
+            '特征名': feat,
+            '字段类型': 'numeric' if is_numeric else 'categorical',
+            '样本数': total,
+            '缺失数': total - non_null,
+            '缺失率': round(missing_rate * 100, 2),
+            '唯一值数': series.nunique(),
+        }
+
+        # 众数
+        if non_null > 0:
+            mode_value = series.mode()
+            result['众数'] = mode_value.iloc[0] if len(mode_value) > 0 else None
+            result['众数频数'] = (series == result['众数']).sum() if result['众数'] is not None else 0
+            result['众数占比'] = round(result['众数频数'] / non_null * 100, 2) if non_null > 0 else 0
+        else:
+            result['众数'] = None
+            result['众数频数'] = 0
+            result['众数占比'] = 0
+
+        # 零值率、负值率（仅数值型）
+        if is_numeric:
+            non_null_series = series.dropna()
+            result['零值数'] = (non_null_series == 0).sum()
+            result['零值率'] = round(result['零值数'] / non_null * 100, 2) if non_null > 0 else 0
+            result['负值数'] = (non_null_series < 0).sum()
+            result['负值率'] = round(result['负值数'] / non_null * 100, 2) if non_null > 0 else 0
+        else:
+            result['零值数'] = 0
+            result['零值率'] = 0
+            result['负值数'] = 0
+            result['负值率'] = 0
+
+        # 重复率
+        if non_null > 0:
+            unique_count = series.nunique()
+            result['重复数'] = non_null - unique_count
+            result['重复率'] = round(result['重复数'] / non_null * 100, 2)
+        else:
+            result['重复数'] = 0
+            result['重复率'] = 0
+
+        # 分布统计
+        if is_numeric:
+            desc = series.describe()
+            result['最小值'] = round(float(desc.get('min', np.nan)), 4) if not pd.isna(desc.get('min')) else None
+            result['最大值'] = round(float(desc.get('max', np.nan)), 4) if not pd.isna(desc.get('max')) else None
+            result['平均值'] = round(float(desc.get('mean', np.nan)), 4) if not pd.isna(desc.get('mean')) else None
+            result['标准差'] = round(float(desc.get('std', np.nan)), 4) if not pd.isna(desc.get('std')) else None
+
+            for p in percentiles:
+                col_name = f'{int(p * 100)}%'
+                result[col_name] = round(float(series.quantile(p)), 4)
+        else:
+            result['最小值'] = None
+            result['最大值'] = None
+            result['平均值'] = None
+            result['标准差'] = None
+
+            value_counts = series.value_counts()
+            if len(value_counts) > 0:
+                sorted_categories = value_counts.index.tolist()
+                total_count = len(series.dropna())
+                percentile_categories = {}
+
+                for p in percentiles:
+                    target_count = int(total_count * p)
+                    cumulative_count = 0
+                    selected_cat = None
+
+                    for cat in sorted_categories:
+                        cat_count = value_counts[cat]
+                        cumulative_count += cat_count
+                        if cumulative_count >= target_count:
+                            selected_cat = cat
+                            break
+
+                    if selected_cat is None:
+                        selected_cat = sorted_categories[-1] if sorted_categories else None
+
+                    percentile_categories[p] = selected_cat
+
+                for p in percentiles:
+                    col_name = f'{int(p * 100)}%'
+                    result[col_name] = percentile_categories.get(p)
+            else:
+                for p in percentiles:
+                    col_name = f'{int(p * 100)}%'
+                    result[col_name] = None
+
+        results.append(result)
+
+    results_df = pd.DataFrame(results).set_index('特征名')
+
+    # 计算IV、KS和趋势
+    if y is not None and y in df.columns:
+        y_series = df[y]
+        numeric_features = [f for f in features if f in df.columns and pd.api.types.is_numeric_dtype(df[f])]
+
+        iv_values = {f: np.nan for f in features}
+        ks_values = {f: np.nan for f in features}
+        trend_values = {f: 'categorical' if not pd.api.types.is_numeric_dtype(df[f]) else 'unknown' for f in features}
+
+        if numeric_features:
+            try:
+                from .processing import Combiner
+
+                for feat in numeric_features:
+                    try:
+                        data_subset = df[[feat, y]].dropna()
+                        if len(data_subset) < 10:
+                            continue
+
+                        bin_table = Combiner.feature_bin_stats(
+                            data_subset, feat, target=y,
+                            max_n_bins=max_n_bins,
+                            ks=True,
+                            empty_separate=True,
+                        )
+
+                        if not bin_table.empty:
+                            if '分档IV值' in bin_table.columns:
+                                total_iv = bin_table['分档IV值'].sum()
+                                if not np.isnan(total_iv) and not np.isinf(total_iv):
+                                    iv_values[feat] = round(float(total_iv), 4)
+
+                            if '分档KS值' in bin_table.columns:
+                                max_ks = bin_table['分档KS值'].abs().max()
+                                if not np.isnan(max_ks):
+                                    ks_values[feat] = round(float(max_ks), 4)
+
+                            # 检测单调性趋势
+                            bad_rates = bin_table['坏样本率'].dropna().values
+                            if len(bad_rates) >= 2:
+                                diffs = np.diff(bad_rates)
+                                all_positive = np.all(diffs >= 0)
+                                all_negative = np.all(diffs <= 0)
+
+                                if all_positive:
+                                    trend_values[feat] = 'ascending'
+                                elif all_negative:
+                                    trend_values[feat] = 'descending'
+                                else:
+                                    peak_idx = np.argmax(bad_rates)
+                                    valley_idx = np.argmin(bad_rates)
+                                    if peak_idx > 0 and peak_idx < len(bad_rates) - 1:
+                                        trend_values[feat] = 'peak'
+                                    elif valley_idx > 0 and valley_idx < len(bad_rates) - 1:
+                                        trend_values[feat] = 'valley'
+                                    else:
+                                        trend_values[feat] = 'unknown'
+                    except Exception:
+                        pass
+            except ImportError:
+                pass
+
+        results_df['IV'] = pd.Series(iv_values)
+        results_df['KS'] = pd.Series(ks_values)
+        results_df['趋势'] = pd.Series(trend_values)
+
+    # 计算PSI
+    psi_values = {f: np.nan for f in features}
+
+    def _compute_psi_from_bins(data1, data2, n_bins=10):
+        """从两个Series计算PSI（基于等频分箱）"""
+        try:
+            combined = pd.concat([data1, data2]).dropna()
+            if len(combined) < 10 or len(data1.dropna()) < 5 or len(data2.dropna()) < 5:
+                return np.nan
+
+            bins = np.quantile(combined, np.linspace(0, 1, n_bins + 1))
+            bins = np.unique(bins)
+            if len(bins) < 3:
+                bins = np.linspace(combined.min(), combined.max(), n_bins + 1)
+                bins = np.unique(bins)
+
+            p1 = np.histogram(data1.dropna(), bins=bins, density=True)[0]
+            p2 = np.histogram(data2.dropna(), bins=bins, density=True)[0]
+
+            p1 = p1 / (p1.sum() + 1e-10)
+            p2 = p2 / (p2.sum() + 1e-10)
+
+            p1 = np.clip(p1, 1e-10, None)
+            p2 = np.clip(p2, 1e-10, None)
+
+            psi = np.sum((p2 - p1) * np.log(p2 / p1))
+            return round(float(psi), 4)
+        except Exception:
+            return np.nan
+
+    if val_df is not None:
+        for feat in features:
+            if feat not in df.columns or feat not in val_df.columns:
+                psi_values[feat] = np.nan
+                continue
+            psi_values[feat] = _compute_psi_from_bins(df[feat], val_df[feat], n_bins=max_n_bins + 1)
+
+    elif psi_method == 'random_split' and len(df) >= 100:
+        try:
+            from sklearn.model_selection import train_test_split
+
+            df_copy = df.dropna(subset=features, how='all').copy()
+            if len(df_copy) >= 100:
+                df1, df2 = train_test_split(df_copy, test_size=psi_test_size, random_state=random_state)
+                for feat in features:
+                    if feat not in df.columns:
+                        psi_values[feat] = np.nan
+                        continue
+                    psi_values[feat] = _compute_psi_from_bins(df1[feat], df2[feat], n_bins=max_n_bins + 1)
+        except Exception:
+            pass
+
+    elif psi_method == 'group_col' and psi_group_col is not None and psi_group_col in df.columns:
+        groups = df[psi_group_col].dropna().unique()
+        if len(groups) >= 2:
+            for feat in features:
+                if feat not in df.columns:
+                    psi_values[feat] = np.nan
+                    continue
+
+                psi_list = []
+                for i, g1 in enumerate(groups):
+                    for g2 in groups[i + 1:]:
+                        data1 = df[df[psi_group_col] == g1][feat].dropna()
+                        data2 = df[df[psi_group_col] == g2][feat].dropna()
+                        if len(data1) > 10 and len(data2) > 10:
+                            psi = _compute_psi_from_bins(data1, data2, n_bins=max_n_bins + 1)
+                            if not np.isnan(psi):
+                                psi_list.append(psi)
+
+                if len(psi_list) > 0:
+                    psi_values[feat] = round(float(np.mean(psi_list)), 4)
+
+    elif psi_method == 'date_col' and psi_date_col is not None and psi_date_col in df.columns:
+        try:
+            df_copy = df.copy()
+            df_copy[psi_date_col] = pd.to_datetime(df_copy[psi_date_col])
+
+            if psi_freq == 'M':
+                df_copy['_period'] = df_copy[psi_date_col].dt.to_period('M').astype(str)
+            elif psi_freq == 'W':
+                df_copy['_period'] = df_copy[psi_date_col].dt.to_period('W').astype(str)
+            elif psi_freq == 'Q':
+                df_copy['_period'] = df_copy[psi_date_col].dt.to_period('Q').astype(str)
+            else:
+                df_copy['_period'] = df_copy[psi_date_col].dt.date.astype(str)
+
+            periods = sorted(df_copy['_period'].dropna().unique())
+            if len(periods) >= 2:
+                for feat in features:
+                    if feat not in df.columns:
+                        psi_values[feat] = np.nan
+                        continue
+
+                    psi_list = []
+                    for i, p1 in enumerate(periods):
+                        for p2 in periods[i + 1:]:
+                            data1 = df_copy[df_copy['_period'] == p1][feat].dropna()
+                            data2 = df_copy[df_copy['_period'] == p2][feat].dropna()
+                            if len(data1) > 10 and len(data2) > 10:
+                                psi = _compute_psi_from_bins(data1, data2, n_bins=max_n_bins + 1)
+                                if not np.isnan(psi):
+                                    psi_list.append(psi)
+
+                    if len(psi_list) > 0:
+                        psi_values[feat] = round(float(np.mean(psi_list)), 4)
+        except Exception:
+            pass
+
+    if psi_values:
+        results_df['PSI'] = pd.Series(psi_values)
+
+    # 重置索引，使特征名成为列
+    results_df = results_df.reset_index()
+
+    # 调整列顺序：基础统计 -> IV/KS/趋势/PSI -> 分布统计
+    base_cols = ['特征名', '字段类型', '样本数', '趋势', 'IV', 'KS', 'PSI', '缺失数', '缺失率', '唯一值数', '众数', '众数频数', '众数占比']
+    quality_cols = ['零值数', '零值率', '负值数', '负值率', '重复数', '重复率']
+    dist_cols = ['最小值', '最大值', '平均值', '标准差'] + [f'{int(p * 100)}%' for p in percentiles]
+
+    ordered_cols = base_cols + quality_cols + dist_cols
+    ordered_cols = [c for c in ordered_cols if c in results_df.columns]
+    results_df = results_df[ordered_cols]
+
+    return results_df
