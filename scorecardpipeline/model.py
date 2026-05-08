@@ -450,6 +450,7 @@ class ScoreCard(toad.ScoreCard, TransformerMixin):
                 ["pdo", self.pdo, "表示分数增长PDO时，ODDS值增长到RATE倍"],
                 ["A", self.factor, "补偿值，计算方式：pdo / ln(rate)"],
                 ["B", self.offset, "刻度，计算方式：base_score - B * ln(base_odds)"],
+                ["score", f"{self.factor:.4f} - {self.offset:.4f} * ln(odds)", "评分公式：分数越高，客户越优质（odds越大，风险越低）"],
             ],
             columns=["刻度项", "刻度值", "备注"],
         )

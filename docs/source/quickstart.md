@@ -455,11 +455,10 @@ $$
 $$
 \begin{aligned}
 B &= pdo / ln(rate) \\
-A &= base\_score + \frac{pdo}{ln(rate)} \times ln(base\_odds)
+A &= base\_score - \frac{pdo}{ln(rate)} \times ln(base\_odds)
 \end{aligned}
 $$
 
-> **注:** 在 `toad` 中使用的是 $woe = ln(\frac{good_i}{good}/\frac{bad_i}{bad})$ ，在上述推导中符号是反的，故而在 `toad` 库中的 `offset = base_score - factor * np.log(base_odds)`，形式上的差异并不会导致最终 `A` 和 `B` 的值，但在计算 $base\_odds$ 时需要注意使用对应的方式进行计算
 
 当计算得到 $A$ 和 $B$ 后，概率转评分的模型也就确定了，下面我们正式进入评分转换方法。
 

@@ -94,6 +94,7 @@ class StandardScoreTransformer(BaseScoreTransformer):
                 ["pdo", self.pdo, "表示分数增长PDO时，ODDS值增长到RATE倍"],
                 ["B", self.B_, "刻度，计算方式：pdo / ln(rate)"],
                 ["A", self.A_, "补偿值，计算方式：base_score - sgn * B * ln(base_odds)，其中 greater_is_better=True 时 sgn=-1，False 时 sgn=1"],
+                ["score", f"{self.A_:.4f} {'+' if self.sgn_ == -1 else '-'} {self.B_:.4f} * ln(odds)", f"评分公式：greater_is_better={self.greater_is_better_}，分数越高客户越{'优质' if self.greater_is_better_ else '劣质'}"],
             ],
             columns=["刻度项", "刻度值", "备注"],
         )
