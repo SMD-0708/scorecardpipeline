@@ -1,0 +1,16 @@
+# 可选依赖 - 图形处理相关
+# 安装方式: pip install scorecardpipeline[all] 或 pip install scorecardpipeline[graph]
+
+# SVG 转 PNG 相关（用于 rule_extraction.py 决策树可视化保存为PNG）
+# 以下两组库只需安装其中一组即可
+
+# 方案1: CairoSVG（推荐，在大多数平台上更稳定）
+# 注意: CairoSVG 需要系统先安装 Cairo 库
+# - Ubuntu/Debian: sudo apt-get install libcairo2-dev
+# - macOS: brew install cairo
+# - Windows: 较难安装，需要从源码编译或使用 conda
+CairoSVG>=2.7.0
+
+# 方案2: svglib + reportlab（纯Python实现，但功能较少）
+svglib>=1.5.0
+reportlab

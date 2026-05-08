@@ -1047,9 +1047,7 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
                 cell = worksheet[f"{col_letter}{row}"]
                 cell.alignment = Alignment(horizontal=horiz, vertical="center")
 
-    if not isinstance(excel_writer, ExcelWriter) and not isinstance(sheet_name, Worksheet):
-        writer.save(excel_writer)
-
+    # 应用自动筛选（必须在保存之前设置）
     if auto_filter:
         last_data_row = end_row - 1
         last_data_col = end_col - 1
@@ -1057,6 +1055,9 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
             worksheet,
             f"{get_column_letter(start_col)}{start_row}:{get_column_letter(last_data_col)}{last_data_row}"
         )
+
+    if not isinstance(excel_writer, ExcelWriter) and not isinstance(sheet_name, Worksheet):
+        writer.save(excel_writer)
 
     return end_row, end_col
 

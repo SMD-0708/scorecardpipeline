@@ -442,6 +442,7 @@ class QuickModelReport:
         max_n_bins: int = 10,
         amount_col: Optional[str] = None,
         margins: bool = True,
+        rules: Optional[List] = None,
     ) -> pd.DataFrame:
         """生成评分分箱效果表
 
@@ -450,6 +451,7 @@ class QuickModelReport:
         :param max_n_bins: 最大分箱数，默认 10
         :param amount_col: 金额字段名
         :param margins: 是否包含合计行
+        :param rules: 分箱规则列表，用于将相同的分箱规则应用到其他数据集进行PSI计算
         """
         from scorecardpipeline.processing import feature_bin_stats
 
@@ -468,15 +470,58 @@ class QuickModelReport:
             desc="模型评分",
             max_n_bins=max_n_bins,
             margins=margins,
-            return_cols=['样本总数', '好样本数', '坏样本数', '样本占比', '好样本占比', '坏样本占比', '坏样本率', 'LIFT值', '累积LIFT值', '坏账改善', '累积坏账改善', '分档KS值'],
+            return_cols=['分箱', '样本总数', '好样本数', '坏样本数', '样本占比', '好样本占比', '坏样本占比', '坏样本率', 'LIFT值', '累积LIFT值', '坏账改善', '累积坏账改善', '分档KS值'],
         )
         if amount_col and amount_col in df.columns:
             kw["amount"] = amount_col
+
+        # 如果传入rules，则使用rules进行分箱（用于PSI计算时保持分箱一致性）
+        if rules is not None:
+            kw["rules"] = rules
 
         table = feature_bin_stats(**kw)
         if isinstance(table, tuple):
             table = table[0]
         return table
+
+    def get_bin_table_rules(
+        self,
+        dataset: str = "train",
+        method: str = "quantile",
+        max_n_bins: int = 10,
+    ) -> Tuple[pd.DataFrame, List]:
+        """获取评分分箱表及其分箱规则
+
+        用于在训练集上确定分箱规则后，将规则应用到其他数据集进行PSI计算。
+
+        :param dataset: 数据集标识，默认 'train'
+        :param method: 分箱方法，默认 'quantile'
+        :param max_n_bins: 最大分箱数，默认 10
+        :return: (分箱表, 分箱规则列表)
+        """
+        from scorecardpipeline.processing import feature_bin_stats
+
+        ds = self._datasets[dataset]
+        target_col = "__target__"
+        score_col = "__score__"
+        df = ds.X.copy()
+        df[target_col] = ds.y.values
+        df[score_col] = ds.score
+
+        table, rules = feature_bin_stats(
+            data=df,
+            feature=score_col,
+            target=target_col,
+            method=method,
+            desc="模型评分",
+            max_n_bins=max_n_bins,
+            margins=False,
+            return_cols=['分箱', '样本总数', '好样本数', '坏样本数', '样本占比', '好样本占比', '坏样本占比', '坏样本率', 'LIFT值', '累积LIFT值', '坏账改善', '累积坏账改善', '分档KS值'],
+            return_rules=True,
+        )
+        if isinstance(table, tuple):
+            table = table[0]
+        return table, rules
 
     # ---------- 特征重要性 ----------
 
@@ -484,25 +529,50 @@ class QuickModelReport:
         """获取特征重要性"""
         if self._importance_cache is None:
             importances = None
+            feature_names = None
+
+            # 尝试从模型获取特征重要性
             if hasattr(self.model, "get_feature_importances"):
                 try:
                     importances = self.model.get_feature_importances()
+                    feature_names = self.model.feature_names_in_ if hasattr(self.model, "feature_names_in_") else None
                 except Exception:
                     pass
+
+            # 尝试从 feature_importances_ 属性获取
             if importances is None and hasattr(self.model, "feature_importances_"):
+                feature_names = getattr(self.model, "feature_names_in_", None)
                 importances = pd.Series(
                     self.model.feature_importances_,
-                    index=self.feature_names,
+                    index=feature_names if feature_names is not None else range(len(self.model.feature_importances_)),
                 )
 
-            if importances is None:
+            # 尝试从 coef_ 属性获取（逻辑回归等线性模型）
+            if importances is None and hasattr(self.model, "coef_"):
+                try:
+                    coefs = np.abs(self.model.coef_)
+                    if len(coefs.shape) > 1:
+                        coefs = coefs.mean(axis=0)
+                    # 尝试从 model 获取 feature_names_in_，如果不存在则尝试获取 inner model
+                    feature_names = getattr(self.model, "feature_names_in_", None)
+                    if feature_names is None and hasattr(self.model, "model") and hasattr(self.model.model, "feature_names_in_"):
+                        feature_names = getattr(self.model.model, "feature_names_in_", None)
+                    if feature_names is not None and len(coefs) == len(feature_names):
+                        importances = pd.Series(coefs, index=feature_names)
+                    else:
+                        importances = pd.Series(coefs)
+                except Exception:
+                    pass
+
+            # 如果无法获取特征重要性，使用空 DataFrame
+            if importances is None or len(importances) == 0:
                 self._importance_cache = pd.DataFrame(columns=["特征重要性", "IV", "KS", "PSI"])
             else:
                 importance_df = pd.DataFrame(index=importances.index)
                 total = importances.sum()
                 importance_df["特征重要性"] = importances.values / total if total else importances.values
 
-                train_ds = self._datasets["train"]
+                train_ds = self._datasets.get("train") or list(self._datasets.values())[0]
                 y_arr = train_ds.y.to_numpy()
 
                 iv_vals, ks_vals, psi_vals = [], [], []
@@ -586,10 +656,15 @@ class QuickModelReport:
     def get_features_corr(self) -> pd.DataFrame:
         """获取特征相关性矩阵"""
         importance = self.get_feature_importance()
-        features = importance.index.tolist()
+        features = importance.index.tolist() if importance is not None and len(importance) > 0 else []
         if not features:
             features = self.feature_names
-        return self._datasets["train"].X[features].corr()
+
+        # 获取数值型特征的相关系数矩阵，过滤非数值列
+        df = self._datasets["train"].X[features].select_dtypes(include=[np.number])
+        if df.shape[1] == 0:
+            return pd.DataFrame()
+        return df.corr()
 
     # ---------- 特征分箱分析 ----------
 
@@ -1429,6 +1504,61 @@ class QuickModelReport:
                 )
             stab_section += 1
 
+        # 4.5 模型评分PSI分析（不同数据集之间）
+        if len(self._datasets) >= 2 and "train" in self._datasets:
+            from scorecardpipeline.utils import psi_plot as _psi_plot
+
+            end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{stab_section}、模型评分PSI分析", style="header_middle", align={"horizontal": "left"})
+            stab_section += 1
+
+            # 获取训练集评分分箱表及其分箱规则
+            # 分箱规则在训练集上确定，然后应用到其他数据集，确保PSI计算时使用相同的分箱边界
+            train_ds = self._datasets["train"]
+            other_ds_keys = [k for k in self._datasets if k != "train"]
+
+            # 在训练集上确定分箱规则
+            score_train, bin_rules = self.get_bin_table_rules("train", method=bin_method, max_n_bins=n_bins)
+
+            for dk in other_ds_keys:
+                test_ds = self._datasets[dk]
+                label = test_ds.label
+
+                # 使用训练集的分箱规则对其他数据集进行分箱，确保PSI计算时使用相同的分箱边界
+                score_test = self.get_bin_table(dk, method=bin_method, max_n_bins=n_bins, margins=True, rules=bin_rules)
+
+                # 绘制PSI图
+                try:
+                    p = str(Path(filepath).parent / f"{Path(filepath).stem}_assets" / f"score_psi_{dk}.png")
+                    score_psi_result = _psi_plot(
+                        score_train, score_test,
+                        labels=["训练集", label],
+                        desc=f"模型评分({label})",
+                        save=p,
+                        result=True,
+                        plot=True,
+                        figsize=(15, 8)
+                    )
+                    # 插入图片
+                    if os.path.exists(p):
+                        end_row, _ = writer.insert_pic2sheet(ws, p, (end_row + 1, 2), figsize=(500, 300))
+                    else:
+                        import warnings as _warnings
+                        _warnings.warn(f"PSI图未生成: {p}")
+
+                    # 插入PSI表格
+                    if isinstance(score_psi_result, pd.DataFrame) and not score_psi_result.empty:
+                        end_row, _ = dataframe2excel(
+                            score_psi_result, writer, sheet_name=ws,
+                            start_row=end_row + 1,
+                            title=f"评分PSI({label} vs 训练集)"
+                        )
+                    else:
+                        import warnings as _warnings
+                        _warnings.warn(f"PSI表格为空或无效")
+                except Exception as e:
+                    import warnings as _warnings
+                    _warnings.warn(f"评分PSI分析失败: {e}")
+
         # ============================================================
         # 5-模型参数 Sheet
         # ============================================================
@@ -1469,7 +1599,7 @@ class QuickModelReport:
         param_section += 1
 
         # 5.4 评分卡专属内容
-        is_scorecard = hasattr(self.model, "lr_model") and hasattr(self.model, "scorecard_points")
+        is_scorecard = hasattr(self.model, "scorecard_points")
 
         if is_scorecard:
             # 逻辑回归拟合结果
@@ -1507,28 +1637,28 @@ class QuickModelReport:
                 pass
             param_section += 1
 
-            # 评分与 Odds 对照
-            end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{param_section}、评分与Odds对照表", style="header_middle", align={"horizontal": "left"})
-            try:
-                odds_ref = self.model.score_odds_reference
-                end_row, _ = dataframe2excel(odds_ref, writer, sheet_name=ws, start_row=end_row + 1)
-            except Exception:
-                pass
-            param_section += 1
+            # # 评分与 Odds 对照
+            # end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{param_section}、评分与Odds对照表", style="header_middle", align={"horizontal": "left"})
+            # try:
+            #     odds_ref = self.model.score_odds_reference
+            #     end_row, _ = dataframe2excel(odds_ref, writer, sheet_name=ws, start_row=end_row + 1)
+            # except Exception:
+            #     pass
+            # param_section += 1
 
-            # 评分漂移分析
-            if len(self._datasets) >= 2:
-                end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{param_section}、稳定性分析", style="header_middle", align={"horizontal": "left"})
-                score_psi_figs = plot_paths.get("score_psi", [])
-                if score_psi_figs:
-                    for fig_path in score_psi_figs:
-                        try:
-                            end_row, _ = writer.insert_pic2sheet(ws, fig_path, (end_row + 1, 2), figsize=(500, 300))
-                        except Exception:
-                            pass
-                score_psi_df = psi_tables.get("score_psi")
-                if isinstance(score_psi_df, pd.DataFrame) and not score_psi_df.empty:
-                    end_row, _ = dataframe2excel(score_psi_df, writer, sheet_name=ws, start_row=end_row + 1, title="评分PSI")
+            # # 评分漂移分析
+            # if len(self._datasets) >= 2:
+            #     end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value=f"{param_section}、稳定性分析", style="header_middle", align={"horizontal": "left"})
+            #     score_psi_figs = plot_paths.get("score_psi", [])
+            #     if score_psi_figs:
+            #         for fig_path in score_psi_figs:
+            #             try:
+            #                 end_row, _ = writer.insert_pic2sheet(ws, fig_path, (end_row + 1, 2), figsize=(500, 300))
+            #             except Exception:
+            #                 pass
+            #     score_psi_df = psi_tables.get("score_psi")
+            #     if isinstance(score_psi_df, pd.DataFrame) and not score_psi_df.empty:
+            #         end_row, _ = dataframe2excel(score_psi_df, writer, sheet_name=ws, start_row=end_row + 1, title="评分PSI")
 
         # ============================================================
         # 6-模型部署需求 Sheet
@@ -1647,6 +1777,13 @@ def auto_model_report(
     :param feature_info: 特征信息表
     :param data_source: 数据来源
     """
+    # 设置 matplotlib 中文字体和图片格式
+    try:
+        from scorecardpipeline.utils import init_setting
+        init_setting()
+    except Exception:
+        pass
+
     report = QuickModelReport(
         model=model,
         X_train=X_train,

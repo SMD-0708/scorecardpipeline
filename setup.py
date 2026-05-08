@@ -28,6 +28,15 @@ def get_requirements(stage=None):
     return requirements
 
 
+# 可选依赖配置
+extras_require = {
+    'all': get_requirements('optional'),
+    'graph': [
+        'reportlab',
+        'svglib>=1.5.0',
+    ],
+}
+
 setup(
     name=NAME,
     version=get_version(),
@@ -39,15 +48,14 @@ setup(
     author_email='itlubber@qq.com',
     packages=find_packages(),
     include_package_data=True,
-    python_requires='>=3.6',
+    python_requires='>=3.8',
     install_requires=get_requirements(),
+    extras_require=extras_require,
     license='MIT',
     classifiers=[
         'Operating System :: POSIX',
         'Operating System :: Microsoft :: Windows',
         'Operating System :: MacOS :: MacOS X',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',

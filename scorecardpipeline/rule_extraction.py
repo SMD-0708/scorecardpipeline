@@ -160,16 +160,41 @@ class DecisionTreeRuleExtractor:
                     try:
                         decision_tree_viz.save("combine_rules_cache.svg")
                     except graphviz.backend.execute.ExecutableNotFound:
-                        print("请确保您已安装 graphviz 程序并且正确配置了 PATH 路径。可参考: https://stackoverflow.com/questions/35064304/runtimeerror-make-sure-the-graphviz-executables-are-on-your-systems-path-aft")
+                        print("请确保您已安装 graphviz 程序并且正确配置了 PATH 路径。可参考: https://stackoverflow.com/questions/35064304/runtimeerror-make-sure-the-graphviz-executables-are-your-systems-path-aft")
 
+                    # 尝试使用 CairoSVG 或 svglib+reportlab 将 SVG 转换为 PNG
+                    _svg_to_png_success = False
                     try:
                         import cairosvg
                         cairosvg.svg2png(url="combine_rules_cache.svg", write_to=save, dpi=240)
-                    except:
-                        from reportlab.graphics import renderPDF
-                        from svglib.svglib import svg2rlg
-                        drawing = svg2rlg("combine_rules_cache.svg")
-                        renderPDF.drawToFile(drawing, save, dpi=240, fmt="PNG")
+                        _svg_to_png_success = True
+                    except ImportError:
+                        pass
+                    except Exception:
+                        pass
+
+                    if not _svg_to_png_success:
+                        try:
+                            from reportlab.graphics import renderPDF
+                            from svglib.svglib import svg2rlg
+                            drawing = svg2rlg("combine_rules_cache.svg")
+                            if drawing is not None:
+                                renderPDF.drawToFile(drawing, save, dpi=240, fmt="PNG")
+                                _svg_to_png_success = True
+                            else:
+                                raise ImportError("svglib failed to parse SVG")
+                        except ImportError:
+                            pass
+                        except Exception:
+                            pass
+
+                    if not _svg_to_png_success:
+                        print("警告: 保存决策树图片失败。如需保存 PNG 格式图片，请安装可选依赖:")
+                        print("  方式1 (推荐): pip install CairoSVG>=2.7.0")
+                        print("    - Linux: sudo apt-get install libcairo2-dev")
+                        print("    - macOS: brew install cairo")
+                        print("  方式2: pip install reportlab svglib>=1.5.0")
+                        print("  或一次性安装所有可选依赖: pip install scorecardpipeline[all]")
 
             except AttributeError:
                 print("请检查 dtreeviz、graphviz 等依赖库是否正确安装")

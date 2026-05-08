@@ -12,11 +12,8 @@ scorecardpy
 ortools<9.8.0,>=9.7.0
 ropwr>=0.4.0
 optbinning
-CairoSVG>=2.7.0
 graphviz>=0.20.1
 dtreeviz>=2.2.1
-reportlab
-svglib
 category-encoders>=2.6.0
 sklearn_pandas
 sklearn2pmml
