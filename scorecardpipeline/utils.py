@@ -563,6 +563,7 @@ def bin_plot(feature_table, desc="", figsize=(10, 6), colors=["#2639E9", "#F76E6
             os.makedirs(os.path.dirname(save), exist_ok=True)
 
         fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+        plt.close('all')
 
     return fig
 
@@ -619,6 +620,7 @@ def corr_plot(data, figure_size=(16, 8), fontsize=16, mask=False, save=None, ann
             os.makedirs(os.path.dirname(save), exist_ok=True)
 
         fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+        plt.close('all')
 
     return fig
 
@@ -794,6 +796,7 @@ def hist_plot(score, y_true=None, figsize=(15, 10), bins=30, save=None, labels=[
             os.makedirs(os.path.dirname(save), exist_ok=True)
 
         plt.savefig(save, dpi=240, format="png", bbox_inches="tight")
+        plt.close('all')
 
     return fig
 
@@ -863,6 +866,7 @@ def psi_plot(expected, actual, labels=["预期", "实际"], desc="", save=None, 
                 os.makedirs(os.path.dirname(save), exist_ok=True)
 
             fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+            plt.close('all')
 
     if result:
         return df_psi[["指标名称", "分箱", f"{labels[0]}样本数", f"{labels[0]}样本占比", f"{labels[0]}坏样本率", f"{labels[1]}样本数", f"{labels[1]}样本占比", f"{labels[1]}坏样本率", f"{labels[1]}% - {labels[0]}%", f"ln({labels[1]}% / {labels[0]}%)", "分档PSI值", "总体PSI值"]]
@@ -933,6 +937,7 @@ def csi_plot(expected, actual, score_bins, labels=["预期", "实际"], desc="",
                 os.makedirs(os.path.dirname(save), exist_ok=True)
 
             fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+            plt.close('all')
 
     if result:
         return df_csi[["指标名称", "分箱", f"{labels[0]}样本数", f"{labels[0]}样本占比", f"{labels[0]}坏样本率", f"{labels[1]}样本数", f"{labels[1]}样本占比", f"{labels[1]}坏样本率", f"{labels[1]}% - {labels[0]}%", "对应分数", "分档CSI值", "总体CSI值"]]
@@ -990,6 +995,7 @@ def dataframe_plot(df, row_height=0.4, font_size=14, header_color='#2639E9', row
             os.makedirs(os.path.dirname(save))
 
         fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+        plt.close('all')
 
     return fig
 
@@ -1044,6 +1050,7 @@ def distribution_plot(data, date="date", target="target", save=None, figsize=(10
             os.makedirs(os.path.dirname(save))
 
         fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
+        plt.close('all')
 
     if result:
         temp = temp.reset_index().rename(columns={date: "日期", "index": "日期", 0: "好样本", 1: "坏样本"})
