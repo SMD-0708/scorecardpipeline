@@ -615,7 +615,7 @@ class Combiner(TransformerMixin, BaseEstimator):
         :param empty_separate: 是否空值单独一箱, 默认 False，推荐设置为 True
         :param return_cols: list，指定返回部分特征分箱统计表的列，默认 None
         :param return_rules: 是否返回特征分箱信息，默认 False
-        :param greater_is_better: 是否越大越好，默认 ""auto", 根据最后两箱的 lift 指标自动推断是否越大越好, 可选 True、False、auto
+        :param greater_is_better: 是否越大越好，默认 "auto", 使用Spearman相关系数自动检测单调性方向，可选 True（越高越好，从低索引累加）、False（越低越好，从高索引累加）、auto
         :param amount: 默认为空, 支持传入数值字段（通常为放款金额）, 在分析逾期率时，输出对应的分析结果
         :param margins: 分箱表是否输出合计, 默认为 False, 即不输出
         :param kwargs: scorecardpipeline.processing.Combiner 的其他参数
@@ -688,39 +688,75 @@ class Combiner(TransformerMixin, BaseEstimator):
         bad_rate = table["坏样本数"].sum() / table["样本总数"].sum()
 
         table["LIFT值"] = table['坏样本率'] / bad_rate
+        # 坏账改善 = (整体坏样本率 - 拒绝后的坏样本率) / 整体坏样本率
+        # 拒绝后的坏样本率 = (总坏样本数 - 拒绝坏样本数) / (总样本数 - 拒绝样本数)
         table["坏账改善"] = (bad_rate - (table["坏样本数"].sum() - table["坏样本数"]) / (table["样本总数"].sum() - table["样本总数"])) / bad_rate
+
+        # 风险拒绝比 = 坏账改善 / 当前箱样本占比
+        table["风险拒绝比"] = table["坏账改善"] / table["样本占比"]
 
         def reverse_series(series):
             return series.reindex(series.index[::-1])
 
+        # 改进的单调性检测：使用Spearman相关系数（参考hscredit的实现）
+        def detect_monotonic_direction(table_df, feature_dict):
+            """检测单调性方向，返回 'ascending' 或 'descending'
+
+            策略：使用Spearman相关系数检测特征值与坏样本率的关系
+            - ascending: 特征值越大，坏样本率越高 -> 拒绝高特征值
+            - descending: 特征值越小，坏样本率越高 -> 拒绝低特征值
+            """
+            valid = table_df[table_df["分箱"].map(feature_dict) != "缺失值"].copy()
+            if len(valid) < 3:
+                return 'descending'  # 默认降序
+
+            # 获取分箱索引（数值型）或排名（类别型）
+            bin_indices = valid.index.tolist()
+            bad_rates = valid["坏样本率"].values
+
+            # 使用Spearman相关系数
+            try:
+                corr = pd.Series(bin_indices, dtype=float).corr(pd.Series(bad_rates, dtype=float), method='spearman')
+                if pd.isna(corr):
+                    return 'descending'
+                # 特征索引越大（LIFT越高）则ascending，降序则descending
+                return 'ascending' if corr > 0 else 'descending'
+            except Exception:
+                return 'descending'
+
+        # 根据 greater_is_better 参数确定累积方向
         if greater_is_better == "auto":
-            if table[table["分箱"].map(feature_bin_dict) != "缺失值"]["LIFT值"].iloc[-1] > table["LIFT值"].iloc[0]:
-                table["累积LIFT值"] = (reverse_series(table['坏样本数']).cumsum() / reverse_series(table['样本总数']).cumsum()) / bad_rate
-                table["累积坏账改善"] = (bad_rate - ((table["坏样本数"].sum() - reverse_series(table['坏样本数']).cumsum()) / (table["样本总数"].sum() - reverse_series(table['样本总数']).cumsum())).fillna(0.0)) / bad_rate
-                if ks:
-                    table = table.sort_values("分箱")
-                    table["累积好样本数"] = reverse_series(table["好样本数"]).cumsum()
-                    table["累积坏样本数"] = reverse_series(table["坏样本数"]).cumsum()
-                    table["分档KS值"] = table["累积坏样本数"] / table['坏样本数'].sum() - table["累积好样本数"] / table['好样本数'].sum()
-            else:
-                table["累积LIFT值"] = (table['坏样本数'].cumsum() / table['样本总数'].cumsum()) / bad_rate
-                table["累积坏账改善"] = (bad_rate - ((table["坏样本数"].sum() - table['坏样本数'].cumsum()) / (table["样本总数"].sum() - table['样本总数'].cumsum())).fillna(0.0)) / bad_rate
-                if ks:
-                    table = table.sort_values("分箱")
-                    table["累积好样本数"] = table["好样本数"].cumsum()
-                    table["累积坏样本数"] = table["坏样本数"].cumsum()
-                    table["分档KS值"] = table["累积坏样本数"] / table['坏样本数'].sum() - table["累积好样本数"] / table['好样本数'].sum()
+            monotonic_dir = detect_monotonic_direction(table, feature_bin_dict)
         elif greater_is_better is False:
-            table["累积LIFT值"] = (reverse_series(table['坏样本数']).cumsum() / reverse_series(table['样本总数']).cumsum()) / bad_rate
-            table["累积坏账改善"] = (bad_rate - ((table["坏样本数"].sum() - reverse_series(table['坏样本数']).cumsum()) / (table["样本总数"].sum() - reverse_series(table['样本总数']).cumsum())).fillna(0.0)) / bad_rate
+            monotonic_dir = 'descending'  # 越低越好 -> 从高风险（高索引）开始
+        else:
+            monotonic_dir = 'ascending'    # 越高越好 -> 从低风险（低索引）开始
+
+        # 根据单调性方向计算累积指标
+        total_bad = table["坏样本数"].sum()
+        total_samples = table["样本总数"].sum()
+
+        if monotonic_dir == 'descending':
+            # 从高风险箱开始累加（reverse）
+            cumsum_bad = reverse_series(table['坏样本数']).cumsum()
+            cumsum_total = reverse_series(table['样本总数']).cumsum()
+            remaining_bad_rate = (total_bad - cumsum_bad) / (total_samples - cumsum_total).replace(0, np.nan)
+            table["累积LIFT值"] = remaining_bad_rate / bad_rate
+            table["累积坏账改善"] = (bad_rate - remaining_bad_rate) / bad_rate
+            table["累积风险拒绝比"] = table["累积坏账改善"] / table["样本占比"]
             if ks:
                 table = table.sort_values("分箱")
                 table["累积好样本数"] = reverse_series(table["好样本数"]).cumsum()
                 table["累积坏样本数"] = reverse_series(table["坏样本数"]).cumsum()
                 table["分档KS值"] = table["累积坏样本数"] / table['坏样本数'].sum() - table["累积好样本数"] / table['好样本数'].sum()
         else:
-            table["累积LIFT值"] = (table['坏样本数'].cumsum() / table['样本总数'].cumsum()) / bad_rate
-            table["累积坏账改善"] = (bad_rate - ((table["坏样本数"].sum() - table['坏样本数'].cumsum()) / (table["样本总数"].sum() - table['样本总数'].cumsum())).fillna(0.0)) / bad_rate
+            # 从低风险箱开始累加
+            cumsum_bad = table['坏样本数'].cumsum()
+            cumsum_total = table['样本总数'].cumsum()
+            remaining_bad_rate = (total_bad - cumsum_bad) / (total_samples - cumsum_total).replace(0, np.nan)
+            table["累积LIFT值"] = remaining_bad_rate / bad_rate
+            table["累积坏账改善"] = (bad_rate - remaining_bad_rate) / bad_rate
+            table["累积风险拒绝比"] = table["累积坏账改善"] / table["样本占比"]
             if ks:
                 table = table.sort_values("分箱")
                 table["累积好样本数"] = table["好样本数"].cumsum()
@@ -732,14 +768,14 @@ class Combiner(TransformerMixin, BaseEstimator):
         table['指标IV值'] = table['分档IV值'].sum()
 
         if margins:
-            table = pd.concat([table, pd.DataFrame([{"指标名称": feature, "指标含义": desc, "分箱": "合计", "好样本数": table["好样本数"].sum(), "坏样本数": table["坏样本数"].sum(), "样本总数": table["样本总数"].sum(), "样本占比": 1.0, "好样本占比": 1.0, "坏样本占比": 1.0, "坏样本率": bad_rate, '分档IV值':  table['分档IV值'].sum(), '指标IV值': table['分档IV值'].sum(), "LIFT值": 1.0, "坏账改善": 1.0, "累积LIFT值": 1.0, "累积坏账改善": 1.0, "累积好样本数": table["好样本数"].sum(), "累积坏样本数": table["坏样本数"].sum(), "分档KS值": table["分档KS值"].max()}])])
+            table = pd.concat([table, pd.DataFrame([{"指标名称": feature, "指标含义": desc, "分箱": "合计", "好样本数": table["好样本数"].sum(), "坏样本数": table["坏样本数"].sum(), "样本总数": table["样本总数"].sum(), "样本占比": 1.0, "好样本占比": 1.0, "坏样本占比": 1.0, "坏样本率": bad_rate, '分档IV值':  table['分档IV值'].sum(), '指标IV值': table['分档IV值'].sum(), "LIFT值": 1.0, "坏账改善": 0.0, "风险拒绝比": np.nan, "累积LIFT值": 1.0, "累积坏账改善": 0.0, "累积风险拒绝比": np.nan, "累积好样本数": table["好样本数"].sum(), "累积坏样本数": table["坏样本数"].sum(), "分档KS值": table["分档KS值"].max()}])])
 
         if return_cols:
             table = table[[c for c in return_cols if c in table.columns]]
         elif ks:
-            table = table[['指标名称', "指标含义", '分箱', '样本总数', '样本占比', '好样本数', '好样本占比', '坏样本数', '坏样本占比', '坏样本率', '分档WOE值', '分档IV值', '指标IV值', 'LIFT值', '坏账改善', '累积LIFT值', '累积坏账改善', '累积好样本数', '累积坏样本数', '分档KS值']]
+            table = table[['指标名称', "指标含义", '分箱', '样本总数', '样本占比', '好样本数', '好样本占比', '坏样本数', '坏样本占比', '坏样本率', '分档WOE值', '分档IV值', '指标IV值', 'LIFT值', '坏账改善', '风险拒绝比', '累积LIFT值', '累积坏账改善', '累积风险拒绝比', '累积好样本数', '累积坏样本数', '分档KS值']]
         else:
-            table = table[['指标名称', "指标含义", '分箱', '样本总数', '样本占比', '好样本数', '好样本占比', '坏样本数', '坏样本占比', '坏样本率', '分档WOE值', '分档IV值', '指标IV值', 'LIFT值', '坏账改善', '累积LIFT值', '累积坏账改善']]
+            table = table[['指标名称', "指标含义", '分箱', '样本总数', '样本占比', '好样本数', '好样本占比', '坏样本数', '坏样本占比', '坏样本率', '分档WOE值', '分档IV值', '指标IV值', 'LIFT值', '坏账改善', '风险拒绝比', '累积LIFT值', '累积坏账改善', '累积风险拒绝比']]
 
         if return_rules:
             return table, list(_combiner[feature])
