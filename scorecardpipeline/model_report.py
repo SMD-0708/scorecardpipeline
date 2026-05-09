@@ -916,7 +916,7 @@ class QuickModelReport:
                 bt = self.get_bin_table(ds_key, method=bin_method, max_n_bins=n_bins, amount_col=amount_col, margins=True)
                 bd = bt.iloc[:-1].reset_index(drop=True) if len(bt) > 1 else bt
                 p = str(output_dir / f"bin_{ds_key}.png")
-                bin_plot(bd, desc="模型评分", ending=f" {tag}", save=p, figsize=(12, 7))
+                bin_plot(bd, desc="模型评分", ending=f" {tag}", save=p, figsize=(14, 8))
                 _safe_close_figs()
                 model_figs.append(p)
             except Exception:
@@ -924,7 +924,7 @@ class QuickModelReport:
 
             try:
                 p = str(output_dir / f"ks_{ds_key}.png")
-                ks_plot(ds.score, ds.y, title=f"{tag} KS曲线", save=p, figsize=(12, 7))
+                ks_plot(ds.score, ds.y, title=f"{tag} KS曲线", save=p, figsize=(14, 8))
                 _safe_close_figs()
                 model_figs.append(p)
             except Exception:
@@ -953,7 +953,7 @@ class QuickModelReport:
                     ft = self.get_feature_bin_table(feat, ds_key, max_n_bins=n_bins, method=bin_method, amount_col=amount_col, margins=True)
                     fd = ft.iloc[:-1].reset_index(drop=True) if len(ft) > 1 else ft
                     p = str(output_dir / f"bin_{feat}_{ds_key}.png")
-                    bin_plot(fd, desc=feat, ending=f" {ds.label}", save=p, figsize=(12, 7))
+                    bin_plot(fd, desc=feat, ending=f" {ds.label}", save=p, figsize=(14, 8))
                     _safe_close_figs()
                     bin_figs.append(p)
                 except Exception:

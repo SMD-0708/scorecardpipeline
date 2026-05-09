@@ -200,7 +200,7 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
                     else:
                         _ = score_table_train.copy()
 
-                    bin_plot(_.drop(index="合计", errors="ignore"), desc=f"{feature_map.get(col, col)}", figsize=(10, 5), anchor=0.935, save=f"model_report/feature_bins_plot_{col}{suffix}.png")
+                    bin_plot(_.drop(index="合计", errors="ignore"), desc=f"{feature_map.get(col, col)}", figsize=(14, 8), anchor=0.935, save=f"model_report/feature_bins_plot_{col}{suffix}.png")
                     feature_pictures.append(f"model_report/feature_bins_plot_{col}{suffix}.png")
 
                 if temp[col].dtypes.name not in ['object', 'str', 'category']:

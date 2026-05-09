@@ -5,7 +5,7 @@
 @Site    : itlubber.art
 """
 import warnings
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 
 warnings.filterwarnings("ignore")
 
@@ -22,6 +22,8 @@ from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.ticker import PercentFormatter, FuncFormatter
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 import seaborn as sns
 from joblib import Parallel, delayed
@@ -529,63 +531,398 @@ def inverse_feature_bins(feature_table, bin_col="分箱"):
     return inverse_bin_vars
 
 
-def bin_plot(feature_table, desc="", figsize=(10, 6), colors=["#2639E9", "#F76E6C", "#FE7715"], save=None, anchor=0.935, max_len=35, fontdict={"color": "#000000"}, hatch=True, ending="分箱图"):
-    """简单策略挖掘：特征分箱图
+# 默认颜色主题
+DEFAULT_COLORS = ["#2639E9", "#F76E6C", "#FE7715"]
 
-    :param feature_table: 特征分箱的统计信息表，由 feature_bin_stats 运行得到
-    :param desc: 特征中文含义或者其他相关信息
-    :param figsize: 图像尺寸大小，传入一个tuple，默认 （10， 6）
-    :param colors: 图片主题颜色，默认即可
-    :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
-    :param anchor: 图例在图中的位置，通常 0.95 左右，根据图片标题与图例之间的空隙自行调整即可
-    :param max_len: 分箱显示的最大长度，防止分类变量分箱过多文本过长导致图像显示区域很小，默认最长 35 个字符
-    :param fontdict: 柱状图上的文字内容格式设置，参考 https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.text.html
-    :param hatch: 柱状图是否显示斜杠，默认显示
-    :param ending: 分箱图标题显示的后缀，标题格式为: f'{desc}{ending}'
-    
-    :return: Figure
-    """
-    feature_table = feature_table.copy()
 
-    feature_table["分箱"] = feature_table["分箱"].apply(lambda x: x if not pd.isnull(x) and re.match(r"^\[.*\)$", x) else (str(x)[:max_len] + ".." if len(str(x)) > max_len else str(x)))
+def _is_missing_bin_label(label: Any) -> bool:
+    """判断是否为缺失分箱标签。"""
+    if pd.isna(label):
+        return True
+    text = str(label).strip().lower()
+    return text in {'missing', 'nan', 'none', 'null', '缺失', '缺失值'}
 
-    fig, ax1 = plt.subplots(figsize=figsize)
-    ax1.barh(feature_table['分箱'], feature_table['好样本数'], color=colors[0], label='好样本', hatch="/" if hatch else None)
-    ax1.barh(feature_table['分箱'], feature_table['坏样本数'], left=feature_table['好样本数'], color=colors[1], label='坏样本', hatch="\\" if hatch else None)
-    ax1.set_xlabel('样本数')
 
-    ax2 = ax1.twiny()
-    ax2.plot(feature_table['坏样本率'], feature_table['分箱'], colors[2], label='坏样本率', linestyle='-.')
-    ax2.set_xlabel('坏样本率: 坏样本数 / 样本总数')
-    ax2.set_xlim(xmin=0.)
+def _is_special_bin_label(label: Any) -> bool:
+    """判断是否为特殊值分箱标签。"""
+    if pd.isna(label):
+        return False
+    text = str(label).strip().lower()
+    return text in {'special', '特殊', '特殊值'}
 
-    for i, rate in enumerate(feature_table['坏样本率']):
-        ax2.scatter(rate, i, color=colors[2])
 
-    if fontdict and fontdict.get("color"):
-        for i, v in feature_table[['样本总数', '好样本数', '坏样本数', '坏样本率']].iterrows():
-            ax1.text(v['样本总数'] / 2, i + len(feature_table) / 60, f"{int(v['好样本数'])}:{int(v['坏样本数'])}:{v['坏样本率']:.2%}", fontdict=fontdict)
+def _is_interval_like_label(label: Any) -> bool:
+    """判断分箱标签是否像数值区间。"""
+    if pd.isna(label):
+        return False
+    text = str(label).strip()
+    if _is_missing_bin_label(text):
+        return False
+    return bool(re.match(r'^[\(\[].*,.*[\)\]]$', text))
 
-    ax1.invert_yaxis()
-    ax2.xaxis.set_major_formatter(PercentFormatter(1, decimals=0, is_latex=True))
-    # ax2.xaxis.set_major_formatter(FuncFormatter(lambda x,_:'{}%'.format(round(x * 100, 4))))
 
-    fig.suptitle(f'{desc}{ending}\n\n')
+def _infer_numeric_feature_table(feature_table: pd.DataFrame) -> bool:
+    """根据分箱标签粗略判断是否为数值型特征分箱表。"""
+    label_col = '分箱标签' if '分箱标签' in feature_table.columns else '分箱'
+    labels = feature_table[label_col].dropna() if label_col in feature_table.columns else pd.Series(dtype=object)
+    labels = labels[~labels.apply(_is_missing_bin_label)]
+    if labels.empty:
+        return False
+    interval_hits = labels.apply(_is_interval_like_label)
+    return bool(interval_hits.any())
 
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles2, labels2 = ax2.get_legend_handles_labels()
-    fig.legend(handles1 + handles2, labels1 + labels2, loc='upper center', ncol=len(labels1 + labels2), bbox_to_anchor=(0.5, anchor), frameon=False)
 
-    plt.tight_layout()
+def _detect_bad_rate_trend(feature_table: pd.DataFrame) -> str:
+    """判断坏样本率趋势，排除缺失值和特殊值分箱。"""
+    if '坏样本率' not in feature_table.columns:
+        return '未知'
 
+    working = feature_table.copy()
+
+    # 通过分箱索引排除缺失值(-1)和特殊值(-2)分箱
+    if '分箱' in working.columns:
+        bin_idx = pd.to_numeric(working['分箱'], errors='coerce')
+        working = working[bin_idx.isna() | (bin_idx >= 0)]
+
+    # 通过标签排除缺失值和特殊值分箱
+    label_col = '分箱标签' if '分箱标签' in working.columns else '分箱'
+    if label_col in working.columns:
+        working = working[
+            ~working[label_col].apply(_is_missing_bin_label)
+            & ~working[label_col].apply(_is_special_bin_label)
+        ]
+
+    rates = pd.to_numeric(working['坏样本率'], errors='coerce').dropna().to_numpy()
+    if len(rates) <= 1:
+        return '未知'
+
+    diffs = np.diff(rates)
+    tol = 1e-6
+    diffs = diffs[np.abs(diffs) > tol]
+    if len(diffs) == 0:
+        return '平稳'
+    if np.all(diffs >= 0):
+        return '上升'
+    if np.all(diffs <= 0):
+        return '下降'
+
+    signs = np.sign(diffs)
+    non_zero = signs[signs != 0]
+    sign_changes = 0 if len(non_zero) <= 1 else int(np.sum(non_zero[1:] != non_zero[:-1]))
+    if sign_changes == 1:
+        return 'U型' if non_zero[0] < 0 < non_zero[-1] else '倒U型'
+    return '波动'
+
+
+def _build_bin_metric_summary(feature_table: pd.DataFrame) -> str:
+    """构建分箱图角标摘要（紧凑两列表达）。"""
+    items = []
+
+    if '指标IV值' in feature_table.columns:
+        iv_values = pd.to_numeric(feature_table['指标IV值'], errors='coerce').dropna()
+        if not iv_values.empty:
+            items.append(f"IV {iv_values.iloc[-1]:.4f}")
+
+    if _infer_numeric_feature_table(feature_table) and '分档KS值' in feature_table.columns:
+        ks_values = pd.to_numeric(feature_table['分档KS值'], errors='coerce').dropna()
+        if not ks_values.empty:
+            items.append(f"KS {ks_values.max():.4f}")
+
+    if 'LIFT值' in feature_table.columns:
+        lift_values = pd.to_numeric(feature_table['LIFT值'], errors='coerce').dropna()
+        if not lift_values.empty:
+            items.append(f"LIFT {lift_values.min():.2f}~{lift_values.max():.2f}")
+
+    trend = _detect_bad_rate_trend(feature_table)
+    if trend != '未知':
+        items.append(f"趋势 {trend}")
+
+    if not items:
+        return ''
+
+    rows = []
+    for i in range(0, len(items), 2):
+        rows.append('    '.join(items[i:i + 2]))
+
+    return '\n'.join(rows)
+
+
+def format_bin_label(label: Any, max_len: int = 35) -> str:
+    """格式化分箱标签，截断过长文本。"""
+    if pd.isna(label):
+        return '缺失值'
+    text = str(label).strip()
+    if _is_missing_bin_label(text):
+        return '缺失值'
+    if len(text) > max_len:
+        return text[:max_len] + '..'
+    return text
+
+
+def save_figure(fig, save: Optional[str] = None):
+    """保存图像到文件。"""
     if save:
-        if os.path.dirname(save) != "" and not os.path.exists(os.path.dirname(save)):
+        if os.path.dirname(save):
             os.makedirs(os.path.dirname(save), exist_ok=True)
-
         fig.savefig(save, dpi=240, format="png", bbox_inches="tight")
         plt.close('all')
 
-    return fig
+
+def setup_axis_style(ax, colors=None, hide_top_right=True):
+    """设置坐标轴样式。"""
+    if colors is None:
+        colors = DEFAULT_COLORS
+    theme_color = colors[0] if colors else "#2639E9"
+
+    ax.spines['top'].set_color(theme_color)
+    ax.spines['bottom'].set_color(theme_color)
+    ax.spines['right'].set_color(theme_color)
+    ax.spines['left'].set_color(theme_color)
+    ax.tick_params(axis='both', colors=theme_color)
+
+
+def _is_feature_table(data) -> bool:
+    """判断是否为特征分箱统计表。"""
+    if not isinstance(data, pd.DataFrame):
+        return False
+    # 必须包含样本统计列
+    stat_cols = ['好样本数', '坏样本数', '样本总数', '坏样本率']
+    if not all(col in data.columns for col in stat_cols):
+        return False
+    # 分箱标识列：'分箱' 或 '分箱标签' 至少有一个
+    return '分箱' in data.columns or '分箱标签' in data.columns
+
+
+def bin_plot(feature_table, desc="", figsize=(14, 8), colors=None, save=None, anchor=0.935, max_len=35, fontdict=None, hatch=True, ending="分箱图", title=None, ax=None, orientation='horizontal', show_data_points=True, show_overall_bad_rate=True, return_frame=False):
+    """特征分箱可视化图（增强版）。
+
+    支持横向和纵向两种布局，显示好/坏样本堆叠柱状图、坏样本率折线、整体坏样本率参考线，
+    以及 IV/KS/LIFT/趋势等统计指标。
+
+    :param feature_table: 特征分箱的统计信息表，由 feature_bin_stats 运行得到
+    :param desc: 特征中文含义或者其他相关信息
+    :param figsize: 图像尺寸大小，默认 (14, 8)
+    :param colors: 图片主题颜色，默认 ["#2639E9", "#F76E6C", "#FE7715"]
+    :param save: 图片保存的地址，如果传入路径中有文件夹不存在，会新建相关文件夹，默认 None
+    :param anchor: 图例在图中的位置，通常 0.935 左右
+    :param max_len: 分箱显示的最大长度，防止分类变量分箱过多文本过长导致图像显示区域很小，默认最长 35 个字符
+    :param fontdict: 柱状图上的文字内容格式设置
+    :param hatch: 柱状图是否显示斜杠，默认显示
+    :param ending: 分箱图标题显示的后缀，标题格式为: f'{desc}{ending}'
+    :param title: 完整标题（优先级高于 desc + ending）
+    :param ax: 可选的 matplotlib Axes 对象，用于在已有画布上绘图
+    :param orientation: 图表方向，'horizontal'/'h'（横向，默认）或 'vertical'/'v'（纵向）
+    :param show_data_points: 是否显示数据点标记
+    :param show_overall_bad_rate: 是否显示整体坏样本率参考线
+    :param return_frame: 是否返回分箱统计表
+
+    :return: matplotlib Figure 或 (Figure, DataFrame)，如果传入 ax 则返回 ax
+
+    **参考样例**
+
+    >>> from scorecardpipeline import bin_plot, feature_bin_stats
+    >>>
+    >>> # 生成分箱统计表
+    >>> bin_table = feature_bin_stats(data, 'age', target='target')
+    >>>
+    >>> # 绘制分箱图
+    >>> bin_plot(bin_table, desc="年龄", save="age_bin_plot.png")
+    >>>
+    >>> # 绘制纵向分箱图
+    >>> bin_plot(bin_table, desc="年龄", orientation='vertical')
+    """
+    if colors is None:
+        colors = DEFAULT_COLORS
+    if fontdict is None:
+        fontdict = {"color": "#000000"}
+
+    feature_table = feature_table.copy()
+
+    # 兼容 feature_bin_stats 返回的格式（有 分箱标签 但无 分箱 列）
+    if '分箱' not in feature_table.columns and '分箱标签' in feature_table.columns:
+        feature_table['分箱'] = feature_table['分箱标签']
+
+    # 处理分箱标签：优先显示具体分箱标签
+    plot_labels = None
+    if '分箱标签' in feature_table.columns:
+        candidate_labels = feature_table['分箱标签']
+        if candidate_labels.notna().any():
+            plot_labels = candidate_labels.astype(str)
+
+    if plot_labels is None:
+        plot_labels = feature_table['分箱'].astype(str)
+
+    feature_table = feature_table.copy()
+    feature_table['_plot_bin_label'] = plot_labels.apply(
+        lambda x: format_bin_label(x, max_len)
+    )
+
+    # 判断方向
+    orientation_key = orientation.lower()
+    if orientation_key not in ['horizontal', 'h', '横向', 'vertical', 'v', '纵向']:
+        raise ValueError("orientation 仅支持 'horizontal'/'h'/'横向' 或 'vertical'/'v'/'纵向'")
+    is_horizontal = orientation_key in ['horizontal', 'h', '横向']
+
+    # 统一排序：分离缺失值/特殊值分箱，数值型按区间下界升序，类别型保持原顺序
+    label_col = '分箱标签' if '分箱标签' in feature_table.columns else '分箱'
+    missing_mask = feature_table[label_col].apply(_is_missing_bin_label)
+    special_mask = feature_table[label_col].apply(_is_special_bin_label)
+    normal_rows = feature_table[~missing_mask & ~special_mask].copy()
+    special_rows = feature_table[special_mask].copy()
+    missing_rows = feature_table[missing_mask].copy()
+
+    # 仅对数值型区间分箱排序
+    is_numeric = _infer_numeric_feature_table(feature_table)
+    if len(normal_rows) > 0 and is_numeric:
+        def extract_lower_bound(bin_label):
+            try:
+                text = str(bin_label).strip()
+                if text.startswith('(') or text.startswith('['):
+                    left = text[1:].split(',')[0].strip()
+                    if left in ('-inf', '-∞'):
+                        return float('-inf')
+                    return float(left)
+            except:
+                pass
+            return float('inf')
+
+        normal_rows['_sort_key'] = normal_rows[label_col].apply(extract_lower_bound)
+        normal_rows = normal_rows.sort_values('_sort_key').drop(columns=['_sort_key'])
+
+    # 重新组合：普通分箱(升序) + 特殊值分箱 + 缺失值分箱(最后)
+    feature_table = pd.concat([normal_rows, special_rows, missing_rows], ignore_index=True)
+
+    # 保存排序后的表用于 return_frame
+    _sorted_table = feature_table.copy()
+
+    if is_horizontal:
+        # barh 第一行在底部、最后一行在顶部，反转使视觉从上到下为升序
+        feature_table = feature_table.iloc[::-1].reset_index(drop=True)
+
+    overall_bad_rate = float(feature_table['坏样本率'].mul(feature_table['样本总数']).sum() / feature_table['样本总数'].sum())
+    axis_theme = colors[0]
+    line_color = '#E85D4A'
+    reference_color = '#4C8DFF'
+    rate_fontdict = {
+        'color': line_color,
+        'fontsize': 10,
+        'fontweight': 'semibold',
+        'bbox': dict(boxstyle='round,pad=0.18', facecolor='white', edgecolor=line_color, linewidth=0.6, alpha=0.92)
+    }
+
+    # 获取或创建 Axes
+    if ax is not None:
+        ax1 = ax
+        fig = ax.figure
+        return_ax = True
+    else:
+        fig, ax1 = plt.subplots(figsize=figsize)
+        return_ax = False
+
+    if is_horizontal:
+        # 横向柱状图
+        y_pos = np.arange(len(feature_table))
+        ax1.barh(y_pos, feature_table['好样本数'], color=colors[0], label='好样本',
+                 hatch="/" if hatch else None, edgecolor='white' if hatch else None, alpha=0.92)
+        ax1.barh(y_pos, feature_table['坏样本数'], left=feature_table['好样本数'], color=colors[1],
+                 label='坏样本', hatch="\\" if hatch else None, edgecolor='white' if hatch else None, alpha=0.92)
+        ax1.set_yticks(y_pos)
+        ax1.set_yticklabels(feature_table['_plot_bin_label'])
+        ax1.set_xlabel('样本数', color=axis_theme)
+
+        ax2 = ax1.twiny()
+        ax2.plot(feature_table['坏样本率'], y_pos, color=line_color, label='坏样本率', linestyle=(0, (4, 3)), linewidth=2.1,
+                 marker='o' if show_data_points else None, markersize=5.5, markerfacecolor='white',
+                 markeredgecolor=line_color, markeredgewidth=1.4)
+        ax2.set_xlabel('坏样本率', color=axis_theme)
+        ax2.set_xlim(left=0.)
+
+        if show_overall_bad_rate:
+            ax2.axvline(overall_bad_rate, color=reference_color, linestyle=(0, (2, 2)), linewidth=1.8, alpha=0.9,
+                        label='整体坏样本率')
+
+        x_right = max(ax2.get_xlim()[1], float(feature_table['坏样本率'].max()) * 1.15 if len(feature_table) > 0 else 0.1)
+        ax2.set_xlim(right=x_right)
+        x_offset = max((ax2.get_xlim()[1] - ax2.get_xlim()[0]) * 0.012, 0.003)
+        for i, rate in enumerate(feature_table['坏样本率']):
+            ax2.text(rate + x_offset, i, f'{rate:.2%}', va='center', ha='left', fontdict=rate_fontdict, clip_on=False)
+
+        ax2.xaxis.set_major_formatter(PercentFormatter(1, decimals=0, is_latex=True))
+    else:
+        # 纵向柱状图
+        x_pos = np.arange(len(feature_table))
+        width = 0.6
+
+        ax1.bar(x_pos, feature_table['好样本数'], width, color=colors[0], label='好样本',
+                hatch="/" if hatch else None, edgecolor='white' if hatch else None, alpha=0.92)
+        ax1.bar(x_pos, feature_table['坏样本数'], width, bottom=feature_table['好样本数'], color=colors[1],
+                label='坏样本', hatch="\\" if hatch else None, edgecolor='white' if hatch else None, alpha=0.92)
+        ax1.set_ylabel('样本数', color=axis_theme)
+        ax1.set_xticks(x_pos)
+        ax1.set_xticklabels(feature_table['_plot_bin_label'], rotation=45, ha='right')
+
+        ax2 = ax1.twinx()
+        ax2.plot(x_pos, feature_table['坏样本率'], color=line_color, label='坏样本率', linestyle=(0, (4, 3)), linewidth=2.1,
+                 marker='o' if show_data_points else None, markersize=5.5, markerfacecolor='white',
+                 markeredgecolor=line_color, markeredgewidth=1.4)
+        ax2.set_ylabel('坏样本率', color=axis_theme)
+        ax2.set_ylim(bottom=0.)
+
+        if show_overall_bad_rate:
+            ax2.axhline(overall_bad_rate, color=reference_color, linestyle=(0, (2, 2)), linewidth=1.8, alpha=0.9,
+                        label='整体坏样本率')
+
+        y_top = max(float(feature_table['坏样本率'].max()) if len(feature_table) > 0 else 0.0, overall_bad_rate)
+        ax2.set_ylim(top=max(ax2.get_ylim()[1], y_top * 1.18 if y_top > 0 else 0.1))
+        y_offset = max(ax2.get_ylim()[1] * 0.015, 0.003)
+        for i, rate in enumerate(feature_table['坏样本率']):
+            ax2.text(i, rate + y_offset, f'{rate:.2%}', ha='center', va='bottom', fontdict=rate_fontdict, clip_on=False)
+
+        ax2.yaxis.set_major_formatter(PercentFormatter(1, decimals=0, is_latex=True))
+
+    setup_axis_style(ax1, [axis_theme], hide_top_right=False)
+    setup_axis_style(ax2, [axis_theme], hide_top_right=False)
+    ax1.tick_params(axis='both', colors=axis_theme)
+    ax2.tick_params(axis='both', colors=axis_theme)
+    ax1.grid(False)
+    ax2.grid(False)
+
+    metric_summary = _build_bin_metric_summary(feature_table.drop(columns=['_plot_bin_label'], errors='ignore'))
+    if not return_ax:
+        if title is not None:
+            fig.suptitle(f'{title}\n\n')
+        else:
+            fig.suptitle(f'{desc}{ending}\n\n')
+
+        handles1, labels1 = ax1.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        legend = fig.legend(handles1 + handles2, labels1 + labels2, loc='upper center',
+                            ncol=len(labels1 + labels2), bbox_to_anchor=(0.5, anchor), frameon=False)
+
+        plt.tight_layout()
+        if metric_summary:
+            fig.canvas.draw()
+            ax_pos = ax1.get_position()
+            legend_bbox = legend.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
+            fig.text(ax_pos.x0, legend_bbox.y0, metric_summary, ha='left', va='bottom',
+                     fontsize=10, color=axis_theme,
+                     bbox=dict(boxstyle='round,pad=0.28', facecolor='white', edgecolor=axis_theme, alpha=0.9, linewidth=0.8))
+        save_figure(fig, save)
+
+        if return_frame:
+            return fig, _sorted_table.drop(columns=['_plot_bin_label'], errors='ignore')
+        return fig
+    else:
+        if metric_summary:
+            ax2.text(0.0, 1.02, metric_summary, transform=ax2.transAxes, ha='left', va='bottom',
+                     fontsize=10, color=axis_theme,
+                     bbox=dict(boxstyle='round,pad=0.28', facecolor='white', edgecolor=axis_theme, alpha=0.9, linewidth=0.8),
+                     clip_on=False)
+        if title is not None:
+            ax1.set_title(title)
+        else:
+            ax1.set_title(f'{desc}{ending}')
+        return ax1
 
 
 def corr_plot(data, figure_size=(16, 8), fontsize=16, mask=False, save=None, annot=True, max_len=35, linewidths=0.1, fmt='.2f', step=2 * 5 + 1, linecolor='white', **kwargs):
@@ -1660,3 +1997,747 @@ def feature_summary(
     results_df = results_df[ordered_cols]
 
     return results_df
+
+
+# ==================== 分箱趋势分析图 ====================
+
+
+def bin_trend_plot(
+    data: pd.DataFrame,
+    feature: str,
+    target: str,
+    dimension_cols: Optional[Union[str, List[str]]] = None,
+    date_col: Optional[str] = None,
+    date_freq: str = 'M',
+    method: str = 'step',
+    max_n_bins: int = 10,
+    min_bin_size: float = 0.02,
+    rules: Optional[dict] = None,
+    special_values: Optional[List] = None,
+    shared_bins: Optional[Union[str, bool]] = 'max_samples',
+    sort_by: Optional[str] = None,
+    sort_order: str = 'asc',
+    max_groups: Optional[int] = None,
+    figsize: Optional[tuple] = None,
+    colors: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    show_overall: bool = True,
+    show_stats: bool = True,
+    orientation: str = 'vertical',
+    dpi: int = 150,
+    save: Optional[str] = None,
+    **kwargs
+) -> plt.Figure:
+    """绘制特征分箱风险趋势图。
+
+    该图表集成了特征在不同维度下的样本分布、坏率走势、统计指标等信息。
+    支持按时间维度（自动聚合）或指定维度列进行分组展示。
+
+    :param data: 输入数据
+    :param feature: 特征列名
+    :param target: 目标变量列名（0/1）
+    :param dimension_cols: 维度列名（单维或多维），用于分组展示
+    :param date_col: 日期列名，如提供则按日期分组
+    :param date_freq: 日期聚合频率，'D'/'W'/'M'/'Q'，默认'M'
+    :param method: 分箱方法，默认 'step'，可选 'chi', 'dt', 'quantile', 'step', 'kmeans', 'cart', 'mdlp', 'uniform'
+    :param max_n_bins: 最大分箱数，默认10
+    :param min_bin_size: 最小箱占比，默认0.02
+    :param rules: 预定义分箱规则 {特征名: 分箱边界列表}
+    :param special_values: 特殊值列表
+    :param shared_bins: 各分组是否共享同一切分点，默认 'max_samples'
+        - 'first': 使用第一个分组（最早时间/第一个维度值）的切分点
+        - 'last': 使用最后一个分组（最近时间/最后一个维度值）的切分点
+        - 'max_samples': 使用样本量最多的分组的切分点（默认）
+        - False 或 None: 每个分组独立计算切分点
+    :param sort_by: 排序列名，None表示不排序，默认按维度值排序
+    :param sort_order: 排序方向，'asc'/'desc'
+    :param max_groups: 最大展示分组数，None表示全部展示
+    :param figsize: 图像尺寸，None时自动计算
+    :param colors: 配色方案，默认 ["#2639E9", "#F76E6C", "#FE7715"]
+    :param title: 图表标题
+    :param show_overall: 是否显示整体样本面板
+    :param show_stats: 是否显示统计指标
+    :param orientation: 图表方向，'vertical'（纵向，默认）或 'horizontal'
+    :param dpi: 图像分辨率
+    :param save: 保存路径
+    :param kwargs: 其他参数
+    :return: matplotlib Figure
+
+    **参考样例**
+
+    >>> from scorecardpipeline import bin_trend_plot
+    >>>
+    >>> # 按月份查看特征趋势
+    >>> fig = bin_trend_plot(df, feature='age', target='bad', date_col='apply_date')
+    >>>
+    >>> # 按客群维度查看
+    >>> fig = bin_trend_plot(df, feature='score', target='bad', dimension_cols='customer_type')
+    >>>
+    >>> # 多维度交叉
+    >>> fig = bin_trend_plot(df, feature='income', target='bad', dimension_cols=['region', 'channel'])
+    """
+    from .processing import feature_bin_stats
+
+    if colors is None:
+        colors = DEFAULT_COLORS
+
+    orientation_key = orientation.lower()
+    is_horizontal = orientation_key in ['horizontal', 'h', '横向']
+
+    # 处理维度列
+    if dimension_cols is not None:
+        if isinstance(dimension_cols, str):
+            dimension_cols = [dimension_cols]
+    else:
+        dimension_cols = []
+
+    # 处理日期列
+    if date_col is not None:
+        data = data.copy()
+        if not pd.api.types.is_datetime64_any_dtype(data[date_col]):
+            data[date_col] = pd.to_datetime(data[date_col])
+
+        try:
+            if date_freq == 'D':
+                data['_date_group'] = data[date_col].dt.strftime('%Y-%m-%d')
+            else:
+                data['_date_group'] = data[date_col].dt.to_period(date_freq).astype(str)
+        except Exception:
+            warnings.warn(f"无法识别 date_freq={date_freq}，已回退为按月分组")
+            data['_date_group'] = data[date_col].dt.to_period('M').astype(str)
+
+        dimension_cols.append('_date_group')
+
+    # 创建组合维度列
+    if len(dimension_cols) > 0:
+        data = data.copy()
+        data['_group_key'] = data[dimension_cols].astype(str).agg('_'.join, axis=1)
+        group_col = '_group_key'
+    else:
+        group_col = None
+
+    # 处理 shared_bins：从指定分组提取切分点，统一应用到所有分组
+    if shared_bins and group_col is not None and rules is None:
+        groups = data[group_col].unique()
+        _sort_by = sort_by if (sort_by is not None and sort_by in data.columns) else None
+        if _sort_by is not None:
+            _group_order = data.groupby(group_col)[_sort_by].first().sort_values(
+                ascending=(sort_order == 'asc')
+            ).index.tolist()
+        else:
+            _group_order = sorted(groups)
+
+        _shared_bins = str(shared_bins).lower()
+        if _shared_bins == 'first':
+            ref_group = _group_order[0] if _group_order else None
+        elif _shared_bins == 'last':
+            ref_group = _group_order[-1] if _group_order else None
+        else:  # 'max_samples' 或其他真值
+            group_sizes = data.groupby(group_col).size()
+            ref_group = group_sizes.idxmax()
+
+        if ref_group is not None:
+            from .processing import Combiner
+            ref_data = data[data[group_col] == ref_group]
+            _valid = ~(pd.isna(ref_data[feature]) | pd.isna(ref_data[target]))
+            X_ref = ref_data.loc[_valid, feature]
+            y_ref = ref_data.loc[_valid, target]
+            if len(X_ref) > 0:
+                try:
+                    combiner = Combiner(method=method, max_n_bins=max_n_bins, min_bin_size=min_bin_size)
+                    combiner.fit(X_ref, y_ref)
+                    splits = combiner.export()["rule"]
+                    if feature in splits and splits[feature]:
+                        rules = {feature: splits[feature]}
+                except Exception:
+                    pass  # 回退到独立分箱
+
+    # 计算整体分箱统计
+    def _compute_stats(df_subset, feat, tgt, _method, _max_bins, _min_bin, _rules, _special):
+        """计算单个分组的分箱统计表。"""
+        if len(df_subset) == 0:
+            return pd.DataFrame()
+
+        X = df_subset[feat].copy()
+        y = df_subset[tgt].copy()
+
+        valid_mask = ~(pd.isna(X) | pd.isna(y))
+        X_valid = X[valid_mask]
+        y_valid = y[valid_mask]
+
+        if len(X_valid) < 10:
+            return pd.DataFrame()
+
+        try:
+            return feature_bin_stats(
+                pd.concat([X_valid, y_valid], axis=1),
+                feat,
+                target=tgt,
+                method=_method,
+                max_n_bins=_max_bins,
+                min_bin_size=_min_bin,
+                rules=_rules,
+                empty_separate=True,
+            )
+        except Exception:
+            return pd.DataFrame()
+
+    overall_stats = _compute_stats(data, feature, target, method, max_n_bins, min_bin_size, rules, special_values)
+
+    if overall_stats.empty:
+        raise ValueError(f"无法计算特征 '{feature}' 的分箱统计")
+
+    panel_stats = [('Overall', overall_stats.copy())] if show_overall else []
+
+    if group_col is not None:
+        groups = data[group_col].unique()
+        if sort_by is not None and sort_by in data.columns:
+            group_order = data.groupby(group_col)[sort_by].first().sort_values(
+                ascending=(sort_order == 'asc')
+            ).index.tolist()
+        else:
+            group_order = sorted(groups)
+
+        if max_groups is not None and len(group_order) > max_groups:
+            group_order = group_order[:max_groups]
+
+        for group_val in group_order:
+            df_group = data[data[group_col] == group_val]
+            stats = _compute_stats(df_group, feature, target, method, max_n_bins, min_bin_size, rules, special_values)
+            if not stats.empty:
+                panel_stats.append((group_val, stats.copy()))
+
+    if not panel_stats:
+        raise ValueError("没有可用的分箱统计数据")
+
+    n_panels = len(panel_stats)
+    if is_horizontal:
+        n_cols = 1
+        n_rows = n_panels
+    else:
+        n_cols = min(3, n_panels)
+        n_rows = int(np.ceil(n_panels / n_cols))
+
+    if figsize is None:
+        if is_horizontal:
+            figsize = (10.5, max(4.8 * n_rows, 5.2))
+        else:
+            figsize = (max(5.2 * n_cols, 10.5), max(5.4 * n_rows, 5.2))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    axes_flat = axes.flatten()
+
+    if title is None:
+        title = f"{feature} - Risk Trend Analysis"
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
+
+    legend_handles = [
+        Patch(facecolor=colors[0], edgecolor='white', label='好样本'),
+        Patch(facecolor=colors[1], edgecolor='white', label='坏样本'),
+        Line2D([0], [0], color='#E85D4A', linestyle=(0, (4, 3)), linewidth=2.1, marker='o', markersize=5, markerfacecolor='white', label='坏样本率'),
+        Line2D([0], [0], color='#4C8DFF', linestyle=(0, (2, 2)), linewidth=1.8, label='整体坏样本率'),
+    ]
+
+    summary_cols = ['指标IV值', '分档KS值', 'LIFT值']
+    panel_max_len = 22 if is_horizontal else 18
+
+    for idx, (group_name, group_df) in enumerate(panel_stats):
+        ax = axes_flat[idx]
+        group_total = group_df['样本总数'].sum()
+        group_bad = group_df['坏样本数'].sum()
+        group_bad_rate = group_bad / group_total if group_total > 0 else 0.0
+        panel_title = f"{group_name}\n({int(group_bad)}/{int(group_total)}, {group_bad_rate:.1%})"
+
+        panel_df = group_df.copy()
+        if not show_stats:
+            panel_df = panel_df.drop(columns=summary_cols, errors='ignore')
+
+        try:
+            bin_plot(
+                data=panel_df,
+                ax=ax,
+                title=panel_title,
+                colors=colors,
+                orientation='horizontal' if is_horizontal else 'vertical',
+                max_len=panel_max_len,
+                show_overall_bad_rate=True,
+            )
+        except Exception as e:
+            ax.text(0.5, 0.5, f'Error: {e}', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(panel_title)
+
+    for idx in range(n_panels, len(axes_flat)):
+        axes_flat[idx].axis('off')
+
+    fig.legend(
+        handles=legend_handles,
+        loc='upper center',
+        ncol=4,
+        bbox_to_anchor=(0.5, 0.94),
+        frameon=False,
+        fontsize=9,
+    )
+
+    fig.subplots_adjust(
+        top=0.84 if n_rows > 1 else 0.80,
+        bottom=0.08,
+        left=0.06,
+        right=0.98,
+        hspace=0.62 if n_rows > 1 else 0.42,
+        wspace=0.28,
+    )
+
+    if save:
+        save_figure(fig, save)
+
+    return fig
+
+
+def batch_bin_trend_plot(
+    data: pd.DataFrame,
+    features: List[str],
+    target: str,
+    dimension_cols: Optional[Union[str, List[str]]] = None,
+    date_col: Optional[str] = None,
+    date_freq: str = 'M',
+    sort_by: str = 'iv',
+    max_features: int = 10,
+    figsize_per_feature: tuple = (12, 4),
+    save_dir: Optional[str] = None,
+    **kwargs
+) -> dict:
+    """批量绘制多个特征的风险趋势图。
+
+    :param data: 输入数据
+    :param features: 特征列表
+    :param target: 目标变量列名
+    :param dimension_cols: 维度列名
+    :param date_col: 日期列名
+    :param date_freq: 日期聚合频率
+    :param sort_by: 排序指标，'iv'/'ks'
+    :param max_features: 最大绘制特征数
+    :param figsize_per_feature: 每个特征的图尺寸
+    :param save_dir: 保存目录
+    :param kwargs: 其他参数传递给 bin_trend_plot
+    :return: 特征名到 Figure 的字典
+
+    **参考样例**
+
+    >>> from scorecardpipeline import batch_bin_trend_plot
+    >>>
+    >>> results = batch_bin_trend_plot(df, features=['age', 'income', 'score'], target='bad')
+    >>> for feat, fig in results.items():
+    ...     fig.savefig(f"{feat}_trend.png")
+    """
+    from .processing import feature_bin_stats
+
+    results = {}
+
+    # 计算特征排序
+    feature_scores = []
+    for feat in features:
+        try:
+            stats_df = feature_bin_stats(data[[feat, target]].dropna(), feat, target=target, method='step')
+            if not stats_df.empty:
+                iv_val = stats_df['指标IV值'].sum() if '指标IV值' in stats_df.columns else 0
+                ks_val = stats_df['分档KS值'].max() if '分档KS值' in stats_df.columns else 0
+                score = iv_val if sort_by == 'iv' else ks_val
+                feature_scores.append({'feature': feat, 'score': score, 'iv': iv_val, 'ks': ks_val})
+        except Exception:
+            pass
+
+    if feature_scores:
+        score_df = pd.DataFrame(feature_scores).sort_values('score', ascending=False)
+        sorted_features = score_df['feature'].tolist()[:max_features]
+    else:
+        sorted_features = features[:max_features]
+
+    # 批量绘制
+    for i, feat in enumerate(sorted_features):
+        print(f"[{i+1}/{len(sorted_features)}] Plotting {feat}...")
+
+        try:
+            fig = bin_trend_plot(
+                data, feature=feat, target=target,
+                dimension_cols=dimension_cols,
+                date_col=date_col, date_freq=date_freq,
+                figsize=figsize_per_feature,
+                **kwargs
+            )
+
+            results[feat] = fig
+
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, f"{feat}_trend.png")
+                fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+        except Exception as e:
+            warnings.warn(f"绘制特征 {feat} 失败: {e}")
+
+    return results
+
+
+# ==================== 多逾期天数分箱图 ====================
+
+
+def _is_multiindex_bin_table(df: pd.DataFrame) -> bool:
+    """检查是否为多级表头的分箱表（来自 feature_bin_stats）。"""
+    return isinstance(df.columns, pd.MultiIndex)
+
+
+def _extract_target_names_from_bin_table(bin_table: pd.DataFrame) -> List[str]:
+    """从多级表头分箱表中提取目标名称列表。"""
+    level_0_names = bin_table.columns.get_level_values(0).unique()
+    target_names = [name for name in level_0_names if name != '分箱详情']
+    return target_names
+
+
+def _get_stats_for_target(bin_table: pd.DataFrame, target_name: str) -> pd.DataFrame:
+    """从多级表头分箱表中提取指定目标的统计信息。
+
+    :param bin_table: 多级表头分箱表
+    :param target_name: 目标名称
+    :return: 单目标的分箱统计表（标准格式）
+    """
+    common_cols = []
+    target_cols = []
+
+    for col_tuple in bin_table.columns:
+        if col_tuple[0] == '分箱详情':
+            common_cols.append(col_tuple[1])
+        elif col_tuple[0] == target_name:
+            target_cols.append(col_tuple[1])
+
+    stats_df = pd.DataFrame()
+
+    # 添加公共列
+    col_mapping = {
+        '分箱标签': '分箱',
+        '样本总数': '样本总数',
+        '样本占比': '样本占比',
+    }
+
+    for orig_col, std_col in col_mapping.items():
+        if orig_col in common_cols:
+            stats_df[std_col] = bin_table[('分箱详情', orig_col)].values
+
+    # 添加目标列
+    target_col_mapping = {
+        '好样本数': '好样本数',
+        '坏样本数': '坏样本数',
+        '坏样本率': '坏样本率',
+    }
+
+    for orig_col, std_col in target_col_mapping.items():
+        if orig_col in target_cols:
+            stats_df[std_col] = bin_table[(target_name, orig_col)].values
+
+    return stats_df
+
+
+def bin_overdues_plot(
+    data: pd.DataFrame,
+    feature: Optional[str] = None,
+    overdue: Optional[List[str]] = None,
+    dpds: Optional[List[int]] = None,
+    bin_table: Optional[pd.DataFrame] = None,
+    method: str = 'step',
+    max_n_bins: int = 10,
+    min_bin_size: float = 0.02,
+    rules: Optional[dict] = None,
+    shared_bins: Optional[Union[str, bool]] = 'max_samples',
+    figsize: Optional[tuple] = None,
+    colors: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    show_stats: bool = True,
+    max_cols: int = 3,
+    save: Optional[str] = None,
+    **kwargs
+) -> plt.Figure:
+    """绘制多个逾期天数的分箱图（横向展示）。
+
+    支持两种输入方式：
+    1. 原始数据 + overdue + dpds：根据原始数据计算分箱并绘图
+    2. 分箱表（来自 feature_bin_stats）：直接解析多级表头分箱表并绘图
+
+    :param data: 输入数据（原始数据模式）或分箱表（当传入 bin_table 时忽略）
+    :param feature: 特征列名（原始数据模式需要）
+    :param overdue: 逾期天数列名列表，如 ['dpd7', 'dpd15', 'dpd30']
+    :param dpds: 逾期阈值列表，与 overdue 一一对应，如 [1, 1, 1]
+        表示逾期天数>=该阈值时视为坏样本
+    :param bin_table: 分箱表（来自 feature_bin_stats 的多级表头 DataFrame）
+        传入后将直接使用分箱表绘图，忽略 data/overdue/dpds 参数
+    :param method: 分箱方法，默认 'step'，可选 'chi', 'dt', 'quantile', 'step', 'kmeans', 'cart', 'mdlp', 'uniform'
+    :param max_n_bins: 最大分箱数，默认10
+    :param min_bin_size: 最小箱占比，默认0.02
+    :param rules: 预定义分箱规则 {特征名: 分箱边界列表}
+    :param shared_bins: 各逾期目标是否共享同一切分点，默认 'max_samples'
+        - 'first': 使用第一个逾期定义的切分点
+        - 'last': 使用最后一个逾期定义的切分点
+        - 'max_samples': 使用有效样本量最多的逾期定义的切分点（默认）
+        - False 或 None: 每个逾期定义独立计算切分点
+    :param figsize: 图像尺寸，None时自动计算
+    :param colors: 配色方案，默认 ["#2639E9", "#F76E6C", "#FE7715"]
+    :param title: 图表总标题
+    :param show_stats: 是否显示统计指标
+    :param max_cols: 每行最多显示几个子图
+    :param save: 保存路径
+    :param kwargs: 其他参数
+    :return: matplotlib Figure
+
+    **参考样例**
+
+    >>> from scorecardpipeline import bin_overdues_plot, feature_bin_stats
+    >>>
+    >>> # 方式1：使用原始数据
+    >>> fig = bin_overdues_plot(
+    ...     df,
+    ...     feature='score',
+    ...     overdue=['MOB1', 'MOB3'],
+    ...     dpds=[0, 7],
+    ... )
+    >>>
+    >>> # 方式2：使用 feature_bin_stats 生成的分箱表
+    >>> bin_table = feature_bin_stats(
+    ...     df,
+    ...     feature='score',
+    ...     overdue=['MOB1', 'MOB3'],
+    ...     dpds=[0, 7]
+    ... )
+    >>> fig = bin_overdues_plot(bin_table=bin_table)
+    """
+    from .processing import Combiner
+
+    if colors is None:
+        colors = DEFAULT_COLORS
+
+    # 分箱表模式：直接解析多级表头分箱表
+    if bin_table is not None:
+        if not _is_multiindex_bin_table(bin_table):
+            raise ValueError("bin_table 必须是多级表头的分箱表（来自 feature_bin_stats）")
+
+        target_names = _extract_target_names_from_bin_table(bin_table)
+
+        if len(target_names) == 0:
+            raise ValueError("分箱表中没有找到目标列（除了 '分箱详情'）")
+
+        # 从分箱详情中提取特征名
+        if ('分箱详情', '指标名称') in bin_table.columns:
+            feature = bin_table[('分箱详情', '指标名称')].iloc[0]
+        else:
+            feature = 'Feature'
+
+        n_plots = len(target_names)
+
+        # 计算行列数
+        n_cols = min(max_cols, n_plots)
+        n_rows = (n_plots + n_cols - 1) // n_cols
+
+        # 自动计算图像尺寸
+        if figsize is None:
+            figsize = (4 * n_cols, 4 * n_rows)
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+
+        # 处理单个子图的情况
+        if n_plots == 1:
+            axes = np.array([axes])
+        axes = axes.flatten() if n_plots > 1 else [axes]
+
+        # 绘制每个目标的分箱图
+        for idx, target_name in enumerate(target_names):
+            ax = axes[idx]
+
+            try:
+                stats_df = _get_stats_for_target(bin_table, target_name)
+
+                if stats_df.empty:
+                    ax.text(0.5, 0.5, 'No Data', ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(target_name)
+                    continue
+
+                # 格式化分箱标签
+                if '分箱' in stats_df.columns:
+                    stats_df['分箱'] = stats_df['分箱'].apply(lambda x: format_bin_label(x, 35))
+
+                bin_plot(
+                    data=stats_df,
+                    ax=ax,
+                    title=target_name,
+                    colors=colors,
+                    orientation='vertical'
+                )
+
+                # 添加统计信息
+                if show_stats:
+                    stats_parts = []
+
+                    # 计算整体坏样本率
+                    if '坏样本数' in stats_df.columns and '样本总数' in stats_df.columns:
+                        total_bad = stats_df['坏样本数'].sum()
+                        total_samples = stats_df['样本总数'].sum()
+                        if total_samples > 0:
+                            bad_rate = total_bad / total_samples
+                            stats_parts.append(f"BadRate: {bad_rate:.2%}")
+
+                    if stats_parts:
+                        stats_text = ", ".join(stats_parts)
+                        ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
+                               ha='right', va='top', fontsize=8,
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+
+            except Exception as e:
+                ax.text(0.5, 0.5, f'Error: {str(e)}', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(target_name)
+
+        # 隐藏多余的子图
+        for idx in range(n_plots, len(axes)):
+            axes[idx].axis('off')
+
+        # 设置总标题
+        if title is None:
+            title = f"{feature} - Multi DPD Binning Analysis"
+        fig.suptitle(title, fontsize=14, fontweight='bold', y=1.02)
+
+        plt.tight_layout()
+
+        if save:
+            save_figure(fig, save)
+
+        return fig
+
+    # 原始数据模式
+    if feature is None:
+        raise ValueError("原始数据模式需要提供 feature 参数")
+    if overdue is None or dpds is None:
+        raise ValueError("原始数据模式需要提供 overdue 和 dpds 参数")
+
+    if len(overdue) != len(dpds):
+        raise ValueError("overdue 和 dpds 长度必须一致")
+
+    n_plots = len(overdue)
+
+    # 计算行列数
+    n_cols = min(max_cols, n_plots)
+    n_rows = (n_plots + n_cols - 1) // n_cols
+
+    # 自动计算图像尺寸
+    if figsize is None:
+        figsize = (4 * n_cols, 4 * n_rows)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+
+    # 处理单个子图的情况
+    if n_plots == 1:
+        axes = np.array([axes])
+    axes = axes.flatten() if n_plots > 1 else [axes]
+
+    # 计算全局分箱规则
+    global_rules = None
+    if shared_bins and rules is None:
+        _shared = str(shared_bins).lower()
+        if _shared == 'first':
+            ref_idx = 0
+        elif _shared == 'last':
+            ref_idx = len(overdue) - 1
+        else:  # 'max_samples' 或其他真值
+            valid_counts = []
+            for dpd_col, threshold in zip(overdue, dpds):
+                y_tmp = (data[dpd_col] >= threshold).astype(int)
+                valid_counts.append((~(pd.isna(data[feature]) | pd.isna(y_tmp))).sum())
+            ref_idx = int(np.argmax(valid_counts))
+
+        dpd_col = overdue[ref_idx]
+        threshold = dpds[ref_idx]
+        y = (data[dpd_col] >= threshold).astype(int)
+        valid_mask = ~(pd.isna(data[feature]) | pd.isna(y))
+        X_valid = data.loc[valid_mask, feature]
+        y_valid = y[valid_mask]
+
+        try:
+            combiner = Combiner(method=method, max_n_bins=max_n_bins, min_bin_size=min_bin_size)
+            combiner.fit(X_valid, y_valid)
+            splits = combiner.export()["rule"]
+            if feature in splits and splits[feature]:
+                global_rules = {feature: splits[feature]}
+        except Exception:
+            pass
+    elif rules is not None:
+        global_rules = rules
+
+    # 绘制每个逾期定义的分箱图
+    from .processing import feature_bin_stats
+
+    for idx, (dpd_col, threshold) in enumerate(zip(overdue, dpds)):
+        ax = axes[idx]
+
+        try:
+            # 创建二元目标变量
+            y = (data[dpd_col] >= threshold).astype(int)
+            target_name = f"{dpd_col}>={threshold}"
+
+            # 构建临时数据
+            temp_df = data[[feature]].copy()
+            temp_df['_target'] = y
+
+            # 计算分箱统计
+            stats_df = feature_bin_stats(
+                temp_df,
+                feature,
+                target='_target',
+                method=method,
+                max_n_bins=max_n_bins,
+                min_bin_size=min_bin_size,
+                rules=global_rules.get(feature, None) if global_rules else None,
+                empty_separate=True,
+            )
+
+            if stats_df.empty:
+                ax.text(0.5, 0.5, 'No Data', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(target_name)
+                continue
+
+            # 格式化分箱标签
+            if '分箱' in stats_df.columns:
+                stats_df['分箱'] = stats_df['分箱'].apply(lambda x: format_bin_label(x, 35))
+
+            bin_plot(
+                data=stats_df,
+                ax=ax,
+                title=target_name,
+                colors=colors,
+                orientation='vertical'
+            )
+
+            # 添加统计信息
+            if show_stats:
+                valid_mask = ~(pd.isna(data[feature]) | pd.isna(y))
+                X_valid = data.loc[valid_mask, feature]
+                y_valid = y[valid_mask]
+
+                bad_rate = y_valid.mean()
+                stats_text = f"BadRate: {bad_rate:.2%}"
+                ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
+                       ha='right', va='top', fontsize=8,
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+
+        except Exception as e:
+            ax.text(0.5, 0.5, f'Error: {str(e)}', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f"{dpd_col} (>= {threshold})")
+
+    # 隐藏多余的子图
+    for idx in range(n_plots, len(axes)):
+        axes[idx].axis('off')
+
+    # 设置总标题
+    if title is None:
+        title = f"{feature} - Multi DPD Binning Analysis"
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+
+    if save:
+        save_figure(fig, save)
+
+    return fig
