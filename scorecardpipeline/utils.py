@@ -23,7 +23,6 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.ticker import PercentFormatter, FuncFormatter
 
-import toad
 import seaborn as sns
 from joblib import Parallel, delayed
 from optbinning import OptimalBinning
@@ -289,6 +288,27 @@ def save_pickle(obj, file, engine="joblib"):
 
 
 def feature_describe(data, feature=None, percentiles=None, missing=None, cardinality=None):
+    """特征描述性统计，计算特征的基础统计指标
+
+    :param data: pd.DataFrame 或 pd.Series，需要统计的数据
+    :param feature: str，特征名称，传入后只统计该列，不传则统计整个 DataFrame
+    :param percentiles: list，分位数点列表，默认 [0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.97, 0.98, 0.99]
+    :param missing: 缺失值标记，如 -999、np.nan 等，传入后会将这些值替换为 np.nan 再统计
+    :param cardinality: int，小于此基数的类别型特征进行频数统计而非分位数统计
+
+    :return: pd.Series，统计指标序列，包含样本数、非空数、查得率以及（数值型）最小值/均值/最大值/各分位点
+
+    **参考样例**
+
+    >>> # 单特征统计
+    >>> stats = feature_describe(data, feature="年龄")
+    >>> # 指定分位数
+    >>> stats = feature_describe(data, feature="收入", percentiles=[0.25, 0.5, 0.75])
+    >>> # 类别型特征（基数小于阈值时返回频数分布）
+    >>> stats = feature_describe(data, feature="学历", cardinality=10)
+    >>> # 处理缺失值标记
+    >>> stats = feature_describe(data, feature="收入", missing=-999)
+    """
     if feature and feature not in data.columns:
         raise ValueError(f"feature {feature} must in columns.")
 
@@ -1066,14 +1086,34 @@ def distribution_plot(data, date="date", target="target", save=None, figsize=(10
 def sample_lift_transformer(df, rule, target='target', sample_rate=0.7):
     """采取好坏样本 sample_rate:1 的抽样方式时，计算抽样样本和原始样本上的 lift 指标
 
-    :param df: 原始数据，需全部为数值型变量
-    :param rule: Rule
-    :param target: 目标变量名称
-    :param sample_rate: 好样本采样比例
+    该函数计算在好坏样本抽样比（sample_rate:1）下，规则命中的拒绝人群在抽样样本和原始样本上的 LIFT 值。
+    主要用于在存在抽样偏差的样本上评估规则的区分能力，并推算到原始全量样本。
 
-    :return:
-        lift_sam: float, 抽样样本上拒绝人群的lift
-        lift_ori: float, 原始样本上拒绝人群的lift
+    :param df: 原始数据，需包含规则涉及的字段和目标变量
+    :param rule: Rule，规则表达式对象
+    :param target: 目标变量名称，默认 "target"
+    :param sample_rate: 好样本采样比例，默认 0.7，即好样本按 0.7:1 的比例抽样（实际模型评估时常用 7:1 等比例抽样以平衡样本）
+
+    :return: tuple，(lift_sam, lift_ori)
+        - lift_sam: float，抽样样本上拒绝人群的 LIFT 值
+        - lift_ori: float，原始样本上拒绝人群的 LIFT 值
+
+    LIFT 值含义：
+        - LIFT > 1：拒绝人群的坏样本率高于整体平均，规则有区分能力
+        - LIFT = 1：规则无区分能力
+        - LIFT < 1：拒绝人群的坏样本率低于整体平均，规则反向
+
+    **参考样例**
+
+    >>> from scorecardpipeline import Rule, sample_lift_transformer
+    >>>
+    >>> # 定义规则
+    >>> rule = Rule("(年龄 < 30) & (历史逾期次数 >= 2)")
+    >>>
+    >>> # 计算 LIFT（好样本7:1抽样）
+    >>> lift_sam, lift_ori = sample_lift_transformer(data, rule, target="target", sample_rate=7)
+    >>> print(f"抽样样本 LIFT: {lift_sam:.4f}")
+    >>> print(f"原始样本 LIFT: {lift_ori:.4f}")
     """
     rj_df = df[rule.predict(df)]
     ps_df = df[~rule.predict(df)]
@@ -1100,9 +1140,27 @@ def sample_lift_transformer(df, rule, target='target', sample_rate=0.7):
 def tasks_executor(tasks, n_jobs=-1, pool="thread"):
     """多进程或多线程任务执行
 
-    :param tasks: 任务
-    :param n_jobs: 线城池或进程池数量
-    :param pool: 类型，默认 thread 线城池,
+    基于 concurrent.futures 实现的任务并行执行器，支持线程池和进程池两种模式。
+
+    :param tasks: 可调用对象（函数）列表，每个任务应为一个不带参数或带可选参数的函数
+    :param n_jobs: 并行 worker 数量，默认 -1（使用全部 CPU），当 pool="thread" 时为线程数，当 pool="process" 时为进程数
+    :param pool: 并行模式，默认 "thread"（线程池），可选 "process"（进程池）
+
+    :return: list，各任务执行结果的列表
+
+    **参考样例**
+
+    >>> # 使用线程池并行执行任务
+    >>> def task1():
+    >>>     return "task1 done"
+    >>> def task2():
+    >>>     return "task2 done"
+    >>> results = tasks_executor([task1, task2], n_jobs=4, pool="thread")
+    >>>
+    >>> # 使用进程池并行执行
+    >>> def heavy_task(x):
+    >>>     return x * 2
+    >>> results = tasks_executor([lambda: heavy_task(i) for i in range(10)], n_jobs=-1, pool="process")
     """
     if len(tasks) <= 0:
         raise ValueError("执行任务数必须大于0")

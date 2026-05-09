@@ -17,7 +17,7 @@ from .excel_writer import ExcelWriter, dataframe2excel
 from .auto_eda import auto_eda_sweetviz
 from .auto_report import auto_data_testing_report
 from .model_report import QuickModelReport, auto_model_report
-from .rule import Rule, ruleset_report, sawpin_badrate_prediction_by_score, bin_table_badrate_prediction
+from .rule import Rule, ruleset_report, sawpin_badrate_prediction_by_score, bin_table_badrate_prediction, swapin_report, swapout_report
 from .rule_extraction import DecisionTreeRuleExtractor
 from .feature_engineering import NumExprDerive
 from .feature_selection import RFE, RFECV, SelectKBest, SelectFromModel, GenericUnivariateSelect, TypeSelector, RegexSelector, ModeSelector, NullSelector, InformationValueSelector, LiftSelector, VarianceSelector, VIFSelector, CorrSelector, PSISelector, NullImportanceSelector, TargetPermutationSelector, ExhaustiveSelector
@@ -28,7 +28,7 @@ __version__ = "0.1.39"
 __all__ = (
     "__version__"
     , "FeatureSelection", "FeatureImportanceSelector", "StepwiseSelection", "Combiner", "WOETransformer"
-    , "ITLubberLogisticRegression", "ScoreCard", "Rule", "DecisionTreeRuleExtractor", "ruleset_report", "sawpin_badrate_prediction_by_score", "bin_table_badrate_prediction"
+    , "ITLubberLogisticRegression", "ScoreCard", "Rule", "DecisionTreeRuleExtractor", "ruleset_report", "sawpin_badrate_prediction_by_score", "bin_table_badrate_prediction", "swapin_report", "swapout_report"
     , "Pipeline", "KS", "AUC", "PSI", "F1", "FeatureUnion", "make_pipeline", "make_union"
     , "init_logger", "init_setting", "init_font_for_excel", "get_excel_font_name", "load_pickle", "save_pickle", "germancredit"
     , "ColorScaleRule", "get_column_letter", "column_index_from_string", "seed_everything"

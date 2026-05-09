@@ -26,6 +26,25 @@ from .excel_writer import ExcelWriter, dataframe2excel
 
 
 class DecisionTreeRuleExtractor:
+    """循环决策树规则挖掘器
+
+    循环训练多棵决策树，每次训练后剔除特征重要性最高的特征，
+    挖掘满足 LIFT 条件的特征组合策略。支持将规则报告输出至 Excel。
+
+    **核心方法**
+
+    - ``fit()``: 循环训练决策树，挖掘高 LIFT 组合策略
+    - ``transform()``: 在新数据集上评估已有规则的效果
+    - ``report()``: 生成组合策略报告并写入 Excel
+
+    **参考样例**
+
+    >>> from scorecardpipeline.rule_extraction import DecisionTreeRuleExtractor
+    >>> extractor = DecisionTreeRuleExtractor(target="target", max_iter=10)
+    >>> extractor.fit(df, max_depth=2, lift=1.5)
+    >>> extractor.report(save="rules_report.xlsx")
+    """
+
     def __init__(self, target="target", labels=["positive", "negative"], feature_map={}, nan=-1., max_iter=128, writer=None, seed=None, theme_color="2639E9", decimal=4):
         """决策树自动规则挖掘工具包
 
@@ -63,6 +82,15 @@ class DecisionTreeRuleExtractor:
             self.writer = ExcelWriter(theme_color=self.theme_color)
 
     def encode_cat_features(self, X, y):
+        """对类别型特征进行 Target Encoding
+
+        使用 category_encoders.TargetEncoder 对类别特征进行编码，
+        编码值基于目标变量的条件均值。编码映射保存在 self.target_enc 中。
+
+        :param X: 原始特征 DataFrame
+        :param y: 目标变量（pd.Series）
+        :return: pd.DataFrame，编码后的特征
+        """
         cat_features = list(set(X.select_dtypes(include=[object, pd.CategoricalDtype]).columns))
         cat_features_index = [i for i, f in enumerate(X.columns) if f in cat_features]
 
@@ -84,6 +112,14 @@ class DecisionTreeRuleExtractor:
             return X
 
     def get_dt_rules(self, tree):
+        """从训练好的决策树中提取所有叶子节点的路径规则
+
+        递归遍历决策树的每个节点，生成形如 ``"feature <= threshold"`` 或
+        ``"feature > threshold"`` 的规则表达式，最终返回每个叶子节点对应的组合规则。
+
+        :param tree: 训练好的 DecisionTreeClassifier 模型
+        :return: list[Rule]，每个叶子节点对应的 Rule 列表
+        """
         rules = dict()
 
         def recurse(node=0, parent=None):  # 搜每个节点的规则
@@ -104,6 +140,21 @@ class DecisionTreeRuleExtractor:
         return list(rules.values())
 
     def select_dt_rules(self, decision_tree, x, y, lift=0., max_samples=1., save=None, verbose=False, drop=False):
+        """评估并筛选决策树的叶子节点规则
+
+        从决策树中提取所有规则，过滤出 LIFT >= lift 且命中率 <= max_samples 的策略，
+        绘制决策树可视化图（可选），并返回规则评估报告。
+
+        :param decision_tree: 训练好的 DecisionTreeClassifier 模型
+        :param x: 特征数据
+        :param y: 目标变量
+        :param lift: LIFT 阈值，默认 0
+        :param max_samples: 最大样本占比阈值，默认 1.0
+        :param save: 决策树图片保存路径，默认 None
+        :param verbose: 是否打印报告，默认 False
+        :param drop: 是否返回待剔除特征，默认 False
+        :return: pd.DataFrame，规则评估报告；str/int，特征名或规则数
+        """
         rules = self.get_dt_rules(decision_tree)
 
         rules_reports = pd.DataFrame()
@@ -216,6 +267,15 @@ class DecisionTreeRuleExtractor:
             return rules_reports, len(rules_reports)
 
     def query_dt_rules(self, x, y, parsed_rules=None):
+        """在新数据集上评估已有规则的效果
+
+        将已挖掘的规则应用于新数据集，计算每条规则的命中情况及坏样本率、LIFT 等指标。
+
+        :param x: 特征数据
+        :param y: 目标变量
+        :param parsed_rules: 已解析的规则 DataFrame 或 Rule 列表，默认 None
+        :return: pd.DataFrame，各规则的命中评估报告
+        """
         if isinstance(parsed_rules, pd.DataFrame):
             parsed_rules = [Rule(r) for r in parsed_rules["组合策略"].unique()]
 
@@ -229,6 +289,18 @@ class DecisionTreeRuleExtractor:
         return rules_reports
 
     def insert_dt_rules(self, parsed_rules, end_row, start_col, save=None, sheet=None, figsize=(500, 350)):
+        """将规则报告写入 Excel 工作表
+
+        将规则评估报告 DataFrame 写入指定的 Excel sheet，并可选插入决策树图片。
+
+        :param parsed_rules: 规则评估报告 DataFrame
+        :param end_row: 起始写入行号
+        :param start_col: 起始写入列号
+        :param save: 决策树图片保存路径，默认 None
+        :param sheet: 工作表名称，默认 None（使用默认 sheet）
+        :param figsize: 图片尺寸，默认 (500, 350)
+        :return: tuple(int, int)，更新后的结束行和结束列
+        """
         if isinstance(sheet, Worksheet):
             worksheet = sheet
         else:
@@ -290,6 +362,14 @@ class DecisionTreeRuleExtractor:
         return self
 
     def transform(self, x, y=None):
+        """在新数据集上评估已有规则的效果
+
+        使用 fit 阶段挖掘的规则，在新数据集上进行评估，返回各规则的命中情况及指标。
+
+        :param x: 包含标签的数据集
+        :param y: 目标变量（如果 x 中不含标签列则需要传入），默认 None
+        :return: pd.DataFrame，规则命中评估报告
+        """
         y = x[self.target]
         X_TE = self.encode_cat_features(x.drop(columns=[self.target]), y)
         X_TE = X_TE.fillna(self.nan)
@@ -302,13 +382,14 @@ class DecisionTreeRuleExtractor:
             return pd.DataFrame(columns=self.describe_columns)
 
     def report(self, valid=None, sheet="组合策略汇总", save=None):
-        """组合策略插入excel文档
+        """生成组合策略报告并写入 Excel
 
-        :param valid: 验证数据集
-        :param sheet: 保存组合策略的表格sheet名称
-        :param save: 保存报告的文件路径
+        将训练集和验证集（可选）上的规则命中情况汇总写入 Excel 报告。
 
-        :return: 返回每个数据集组合策略命中情况
+        :param valid: 验证数据集，支持 pd.DataFrame、list[DataFrame] 或 dict，默认 None
+        :param sheet: 保存组合策略汇总的 sheet 名称，默认 "组合策略汇总"
+        :param save: 保存报告的文件路径，默认 None（不保存）
+        :return: tuple(pd.DataFrame, ...)，每个数据集的规则命中报告
         """
         worksheet = self.writer.get_sheet_by_name(sheet or "决策树组合策略挖掘")
 

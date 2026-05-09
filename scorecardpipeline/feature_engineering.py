@@ -11,19 +11,54 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 
 class NumExprDerive(BaseEstimator, TransformerMixin):
-    """Derive features by expressions.
+    """基于 numexpr 表达式的特征派生器
+
+    通过传入 (新特征名, 表达式) 元组列表，使用 numexpr 引擎进行向量化计算，快速派生新特征。
+    支持 pandas.DataFrame 和 numpy.ndarray 两种输入模式，fit 为空操作（无监督信息），
+    符合 sklearn Transformer 规范，可直接放入 Pipeline。
+
+    **支持的表达式语法**
+
+    numexpr 支持丰富的数学和函数操作，包括但不限于：
+    - 算术运算: ``+``, ``-``, ``*``, ``/``, ``**``, ``%``
+    - 比较运算: ``<``, ``>``, ``<=``, ``>=``, ``==``, ``!=``
+    - 逻辑运算: ``&``, ``|``, ``~``（注意表达式中需加括号，如 ``(a > 0) & (b < 10)``）
+    - 条件函数: ``where(condition, x, y)``（条件为 True 取 x，否则取 y）
+    - 数学函数: ``sin``, ``cos``, ``tan``, ``abs``, ``log``, ``exp``, ``sqrt`` 等
+    - 聚合函数: ``sum``, ``mean``, ``max``, ``min``
 
     **参考样例**
 
     >>> import pandas as pd
+    >>> import numpy as np
     >>> from scorecardpipeline.feature_engineering import NumExprDerive
-    >>> X = pd.DataFrame({"f0": [2, 1.0, 3], "f1": [np.inf, 2, 3], "f2": [2, 3, 4], "f3": [2.1, 1.4, -6.2]})
-    >>> fd = NumExprDerive(derivings=[("f4", "where(f1>1, 0, 1)"), ("f5"、"f1+f2"), ("f6", "sin(f1)"), ("f7", "abs(f3)"))
-    >>> fd.fit_transform(X)
+    >>>
+    >>> X = pd.DataFrame({
+    >>>     "f0": [2, 1.0, 3],
+    >>>     "f1": [1, 2, 3],
+    >>>     "f2": [2, 3, 4],
+    >>>     "f3": [2.1, 1.4, -6.2]
+    >>> })
+    >>>
+    >>> # 派生新特征
+    >>> fd = NumExprDerive(derivings=[
+    >>>     ("f4", "where(f1>1, 0, 1)"),      # 条件派生
+    >>>     ("f5", "f1+f2"),                  # 加法
+    >>>     ("f6", "sin(f3)"),                # 数学函数
+    >>>     ("f7", "abs(f3)"),                # 绝对值
+    >>> ])
+    >>> X_new = fd.fit_transform(X)
+    >>>
+    >>> # 在 Pipeline 中使用
+    >>> from sklearn.pipeline import Pipeline
+    >>> pipe = Pipeline([
+    >>>     ("derive", NumExprDerive(derivings=[("ratio", "f1/(f2+1)")])),
+    >>>     ("model", SomeModel())
+    >>> ])
     """
     def __init__(self, derivings=None):
         """
-        :param derivings: list, default=None. Each entry is a (name, expr) pair representing a deriving rule.
+        :param derivings: list，每个元素为 (新特征名, 表达式) 元组，如 [("f4", "where(f1>1, 0, 1)")]
         """
         self.derivings = derivings
         self.fitted_ = False

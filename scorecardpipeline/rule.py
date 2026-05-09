@@ -107,23 +107,65 @@ def json2expr(data, max_index, feature_list):
 
 class Rule:
     def __init__(self, expr):  # expr 既可以传递字符串，也可以传递dict
-        """规则集
+        """规则集，基于 pandas.DataFrame.eval 实现布尔表达式求值
 
-        :param expr: 类似 DataFrame 的 query 方法传参方式即可，目前仅支持数值型变量规则
+        底层使用 ``DataFrame.eval()``（即 pandas.eval）执行表达式求值，支持任意类型的 DataFrame 列：
+        数值型、字符串型、类别型（categorical）、日期型等均可。
+        表达式最终需要返回布尔值（True / False），用于判断样本是否命中规则。
+
+        支持的表达式语法（均为 pandas eval 支持的语法）：
+
+        - 比较运算: ``<``, ``>``, ``<=``, ``>=``, ``==``, ``!=``
+        - 算术运算: ``+``, ``-``, ``*``, ``/``, ``**``, ``%``
+        - 逻辑运算: ``&``（与）、``|``（或）、``~``（非）
+          - **注意**: 表达式中涉及 ``&`` / ``|`` 时需用括号包裹，如 ``(a > 0) & (b < 10)``
+        - 空值判断: ``.isna()`` / ``.isnull()`` / ``.notna()`` / ``.notnull()``
+        - 成员判断: ``.isin([values])``（判断是否在给定列表中）
+        - 字符串方法: ``.str.contains()``、``.str.startswith()``、``.str.endswith()`` 等
+        - 条件选择: ``where(cond, x, y)``
+
+        **空值（NaN / None）行为**: 任何与空值的比较运算均返回 ``False``。例如 ``(年龄 > 30)`` 中若年龄为空，该样本不命中。若需显式判断空值，请使用 ``.isna()`` 或 ``.notna()``。
+
+        **不支持的语法**: Python 原生的 ``in`` 运算符（请使用 ``.isin([...])``）、``is`` / ``is not`` 比较（请使用 ``==`` / ``!=``）。
+
+        :param expr: 规则表达式字符串，类似 ``DataFrame.query`` 的语法。
+            支持任意列类型（数值型、字符串型、类别型等），表达式返回值须为布尔型。
+            支持中文字段名（需确保字段名不含空格和特殊字符）。
+            也支持 dict 格式（JSON 规则树结构，已不推荐）。
 
         **参考样例**
 
         >>> from scorecardpipeline import *
+        >>> import pandas as pd
         >>> target = "creditability"
         >>> data = germancredit()
         >>> data[target] = data[target].map({"good": 0, "bad": 1})
-        >>> data = data.select_dtypes("number") # 暂不支持字符型规则
+        >>>
+        >>> # 数值型规则
         >>> rule1 = Rule("duration_in_month < 10")
         >>> rule2 = Rule("credit_amount < 500")
         >>> rule1.report(data, target=target)
-        >>> rule2.report(data, target=target)
-        >>> (rule1 | rule2).report(data, target=target)
-        >>> (rule1 & rule2).report(data, target=target)
+        >>>
+        >>> # 规则组合
+        >>> (rule1 | rule2).report(data, target=target)   # 或运算
+        >>> (rule1 & rule2).report(data, target=target)   # 与运算
+        >>> (~rule1).report(data, target=target)           # 非运算
+        >>>
+        >>> # 类别型/字符串型规则（使用 .isin()）
+        >>> rule3 = Rule("status_of_existing_checking_account.isin(['... < 0 DM', '0 <= ... < 200 DM'])")
+        >>> rule3.report(data, target=target)
+        >>>
+        >>> # 显式判断空值
+        >>> rule4 = Rule("(年龄.isna()) | (年龄 > 30)")
+        >>> rule4.report(data, target=target)
+        >>>
+        >>> # 字符串包含规则
+        >>> rule5 = Rule("职业.str.contains('管理|技术')")
+        >>> rule5.report(data, target=target)
+        >>>
+        >>> # 成员判断规则
+        >>> rule6 = Rule("学历.isin(['本科', '硕士', '博士'])")
+        >>> rule6.report(data, target=target)
         """
         self._state = RuleState.INITIALIZED
         self.expr = expr
@@ -139,7 +181,7 @@ class Rule:
         if not isinstance(X, DataFrame):
             raise ValueError("Rule can only predict on DataFrame.")
         
-        check_array(X, dtype=None, ensure_2d=True, force_all_finite="allow-nan")
+        # check_array(X, dtype=None, ensure_2d=True, force_all_finite="allow-nan")
         result = X.eval(self.expr)
         
         # feature_names = X.columns.values.tolist()  # 取数据的列名
@@ -494,6 +536,43 @@ class Rule:
 
 
 def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", overdue=None, dpd=None, filter_cols=None, save=None, **kwargs) -> pd.DataFrame:
+    """批量评估规则集效果，逐条统计每条规则的命中情况及汇总
+
+    该函数对传入的规则集进行批量评估：
+    1. 计算所有规则并集命中的汇总坏账情况
+    2. 按规则传入顺序逐条统计每条规则的命中样本及剩余样本
+    3. 最终输出包含原始样本、各规则逐条结果及汇总的三段式报告
+
+    :param datasets: 需要评估规则效果的数据集
+    :param rules: Rule 列表，按传入顺序逐步累加统计
+    :param target: 目标变量名称，默认 "target"
+    :param overdue: 逾期天数字段名称，当传入时优先于 target 使用多逾期标签分析
+    :param dpd: 逾期定义方式，逾期天数 > dpd 为 1，其他为 0，需与 overdue 配合使用
+    :param filter_cols: 规则详情中需要保留的列名列表，默认 None（保留全部）
+    :param save: 图片保存路径，默认 None，不保存图片
+    :param kwargs: 透传至 Rule.report 方法的参数，如 combiner、method 等
+
+    :return: pd.DataFrame，规则评估报告，列结构取决于标签类型：
+        - 单标签：["分箱", "样本总数", "好样本数", "坏样本数", ...] 等
+        - 多逾期标签：MultiIndex 列结构，包含各逾期标签的统计指标
+
+    **参考样例**
+
+    >>> # 单一 target 分析
+    >>> rules = [
+    >>>     Rule("(年龄 < 30) & (收入 > 5000)"),
+    >>>     Rule("(历史逾期次数 < 2)"),
+    >>> ]
+    >>> report = ruleset_report(data, rules, target="target")
+    >>>
+    >>> # 多逾期标签分析
+    >>> report_multi = ruleset_report(
+    >>>     data, rules,
+    >>>     overdue=["MOB1", "MOB2"],
+    >>>     dpd=[15, 7, 3],
+    >>>     filter_cols=["样本总数", "好样本数", "坏样本数", "坏样本率"]
+    >>> )
+    """
     datasets = datasets.copy()
 
     feature_names_missing = set([f for rule in rules for f in rule.feature_names_in_]) - set(datasets.columns)
@@ -503,26 +582,40 @@ def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", o
     report = pd.DataFrame()
 
     table_total = reduce(lambda r1, r2: r1 | r2, rules).report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=True, **kwargs)
-    # Normalize to flat columns (not MultiIndex) for consistent processing
-    if isinstance(table_total.columns, pd.MultiIndex):
-        table_total.columns = ['_'.join(str(c).strip() for c in cols) for cols in table_total.columns]
-    table_total = table_total.drop(columns=["分箱"], errors="ignore")
-    table_total["分箱"] = ["汇总", "剩余样本", "原始样本"]
 
-    report = pd.concat([report, table_total.loc[table_total["分箱"] == "原始样本", :]])
+    if target is not None and (overdue is None or dpd is None):
+        table_total["分箱"] = ["汇总", "剩余样本", "原始样本"]
+        table_total = table_total.drop(columns=["规则分类", "指标名称"])
 
-    for rule in rules:
-        table = rule.report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=False, **kwargs)
-        if isinstance(table.columns, pd.MultiIndex):
-            table.columns = ['_'.join(str(c).strip() for c in cols) for cols in table.columns]
-        table = table.drop(columns=["分箱"], errors="ignore")
-        table["分箱"] = [rule.expr, "剩余样本"]
+        report = pd.concat([report, table_total.loc[table_total["分箱"] == "原始样本", :]])
 
-        report = pd.concat([report, table])
+        for rule in rules:
+            table = rule.report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=False, **kwargs)
+            table["分箱"] = [rule.expr, "剩余样本"]
+            table = table.drop(columns=["规则分类", "指标名称"])
 
-        datasets = datasets[~rule.predict(datasets)]
+            report = pd.concat([report, table])
 
-    report = pd.concat([report, table_total.loc[table_total["分箱"] == "汇总", :]]).reset_index(drop=True)
+            datasets = datasets[~rule.predict(datasets)]
+
+        report = pd.concat([report, table_total.loc[table_total["分箱"] == "汇总", :]]).reset_index(drop=True)
+
+    else:
+        table_total[("规则详情", "分箱")] = ["汇总", "剩余样本", "原始样本"]
+        table_total = table_total.drop(columns=[("规则详情", "规则分类"), ("规则详情", "指标名称")])
+
+        report = pd.concat([report, table_total.loc[table_total[("规则详情", "分箱")] == "原始样本", :]])
+
+        for rule in rules:
+            table = rule.report(datasets, target=target, overdue=overdue, dpd=dpd, filter_cols=filter_cols, margins=False, **kwargs)
+            table[("规则详情", "分箱")] = [rule.expr, "剩余样本"]
+            table = table.drop(columns=[("规则详情", "规则分类"), ("规则详情", "指标名称")])
+
+            report = pd.concat([report, table])
+
+            datasets = datasets[~rule.predict(datasets)]
+
+        report = pd.concat([report, table_total.loc[table_total[("规则详情", "分箱")] == "汇总", :]]).reset_index(drop=True)
 
     if save:
         dataframe_plot(report, save=save, **kwargs)
@@ -531,6 +624,22 @@ def ruleset_report(datasets: pd.DataFrame, rules: List[Rule], target="target", o
 
 
 def bin_table_badrate_prediction(group, amount=None):
+    """分箱坏账预测的聚合函数，用于 groupby 后的统计
+
+    :param group: groupby 后的数据组，预期包含 BAD_RATE 列（分箱内坏样本率）
+    :param amount: 金额字段名称，传入后按金额加权计算坏账指标
+
+    :return: pd.Series，包含样本总数、坏样本数、坏样本率三个指标
+
+    **参考样例**
+
+    >>> # 样本维度（不使用金额字段）
+    >>> grouped = df.groupby("分箱")
+    >>> result = grouped.apply(bin_table_badrate_prediction)
+    >>>
+    >>> # 金额维度（使用金额字段）
+    >>> result_amount = grouped.apply(bin_table_badrate_prediction, amount="放款金额")
+    """
     if amount is None:
         return pd.Series(dict(
             样本总数=len(group),
@@ -546,20 +655,28 @@ def bin_table_badrate_prediction(group, amount=None):
 
 
 def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, swap_in_ruleset, feature, target="target", overdue=None, dpd=None, rules={}, method="quantile", max_n_bins=10, amount=None, **kwargs):
-    """
-    基于 base 上 feature 的分箱，计算 test 的逾期数据
+    """SWAP IN 分析，基于 base 分箱预测 test 的逾期率
 
-    :param base: pd.DataFrame, 有表现的数据集，用于建立分箱规则和计算坏样本率
-    :param test: pd.DataFrame, 测试数据集（包含置入样本），需要预测风险
-    :param swap_in_ruleset: list 置入规则列表
-    :param feature: str 特征名称
-    :param target: str 目标变量名称
-    :param overdue: list or str 逾期字段名称
-    :param dpd: list or int 逾期天数阈值
-    :param rules: dict 分箱规则
-    :param method: str 分箱方法
-    :param max_n_bins: int 最大分箱数
-    :param amount: 金额字段名称
+    该函数在 base 数据集上对 feature 进行分箱，映射 test 数据集的逾期预测值。
+    通过 base 的分箱规则，将 test 中命中规则的样本映射到对应分箱的坏样本率。
+    支持单 target 和多逾期标签（overdue+dpds 组合）分析。
+
+    :param base: pd.DataFrame，有表现的数据集，用于建立分箱规则和计算基准坏账率
+    :param test: pd.DataFrame，测试数据集（包含置入样本），需要预测风险
+    :param swap_in_ruleset: Rule 或 list[Rule]，置入规则列表
+    :param feature: str，特征名称，用于在 base 上建立分箱规则并映射 test 的坏样本率
+    :param target: str，目标变量名称，默认 "target"
+    :param overdue: list or str，逾期字段名称，当传入时优先于 target 使用多逾期标签分析
+    :param dpd: list or int，逾期天数阈值，逾期天数 > dpd 为 1，需与 overdue 配合使用
+    :param rules: dict，分箱规则，格式为 {feature: [bins]}，用于指定分箱切点
+    :param method: str，分箱方法，默认 "quantile"，可选项参考 toad.Combiner
+    :param max_n_bins: int，最大分箱数，默认 10
+    :param amount: str，金额字段名称，传入后额外输出按金额加权的分析报告
+    :param kwargs: 透传至 feature_bin_stats 的其他参数
+
+    :return:
+        + 样本维度报告: pd.DataFrame，包含分箱信息、样本统计、坏样本率、LIFT 等
+        + 金额维度报告: pd.DataFrame，当 amount 不为空时返回，按金额加权的分析报告
 
     **参考样例**
 
@@ -567,7 +684,7 @@ def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, s
     >>> swap_in_ruleset = [Rule("(当前履约机构数 < 22) & (自营资质分 >= 0) & (自营资质分 < 555)")]
     >>> # 单一target分析
     >>> swap_in_data, swap_in_data_amount = sawpin_badrate_prediction_by_score(
-    >>>     swap_data, swap_data, swap_in_ruleset, "自营资质分", 
+    >>>     swap_data, swap_data, swap_in_ruleset, "自营资质分",
     >>>     target="target", amount="放款金额"
     >>> )
     >>> # 多逾期标签分析
@@ -599,37 +716,40 @@ def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, s
         test["BINS"] = combiner.transform(test[feature])
         test["BAD_RATE"] = test["BINS"].map(dict(zip(base_table.index, base_table["坏样本率"])))
         swap_in_data = test.groupby("SWAPIN").apply(lambda x: bin_table_badrate_prediction(x)).sort_index(ascending=False)
-        swap_in_data.index = [rule_swap_in.expr, "剩余样本"]
+        swap_in_data.index = [rule_swap_in.expr, "原始样本"]
         swap_in_data.index.name = "规则详情"
-        swap_in_data.loc["合计", :] = pd.Series(dict(
+        swap_in_data.loc["置换样本", :] = pd.Series(dict(
                 样本总数=len(test),
                 坏样本数=test["BAD_RATE"].sum(),
                 坏样本率=test["BAD_RATE"].mean(),
             ))
         swap_in_data = swap_in_data.assign(
-            样本占比=lambda x: x["样本总数"] / swap_in_data.loc["合计", "样本总数"],
-            LIFT值=lambda x: x["坏样本率"]  / swap_in_data.loc["合计", "坏样本率"],
-            坏账改善=lambda x: (swap_in_data.loc["合计", "坏样本率"] - x["坏样本率"]) / swap_in_data.loc["合计", "坏样本率"],
+            样本占比=lambda x: x["样本总数"] / swap_in_data.loc["置换样本", "样本总数"],
+            LIFT值=lambda x: x["坏样本率"]  / swap_in_data.loc["置换样本", "坏样本率"],
+            坏账改善=lambda x: (swap_in_data.loc["置换样本", "坏样本率"] - x["坏样本率"]) / swap_in_data.loc["置换样本", "坏样本率"],
             风险拒绝比=lambda x: x["坏账改善"] / x["样本占比"],
         )
 
         if amount is not None:
             swap_in_data_amount = test.groupby("SWAPIN").apply(lambda x: bin_table_badrate_prediction(x, amount=amount)).sort_index(ascending=False)
-            swap_in_data_amount.index = [rule_swap_in.expr, "剩余样本"]
+            swap_in_data_amount.index = [rule_swap_in.expr, "原始样本"]
             swap_in_data_amount.index.name = "规则详情"
-            swap_in_data_amount.loc["合计", :] = pd.Series(dict(
+            swap_in_data_amount.loc["置换样本", :] = pd.Series(dict(
                     样本总数=test[amount].sum(),
                     坏样本数=(test[amount] * test["BAD_RATE"]).sum(),
                     坏样本率=(test[amount] * test["BAD_RATE"]).sum() / test[amount].sum(),
                 ))
             swap_in_data_amount = swap_in_data_amount.assign(
-                样本占比=lambda x: x["样本总数"] / swap_in_data_amount.loc["合计", "样本总数"],
-                LIFT值=lambda x: x["坏样本率"]  / swap_in_data_amount.loc["合计", "坏样本率"],
-                坏账改善=lambda x: (swap_in_data_amount.loc["合计", "坏样本率"] - x["坏样本率"]) / swap_in_data_amount.loc["合计", "坏样本率"],
+                样本占比=lambda x: x["样本总数"] / swap_in_data_amount.loc["置换样本", "样本总数"],
+                LIFT值=lambda x: x["坏样本率"]  / swap_in_data_amount.loc["置换样本", "坏样本率"],
+                坏账改善=lambda x: (swap_in_data_amount.loc["置换样本", "坏样本率"] - x["坏样本率"]) / swap_in_data_amount.loc["置换样本", "坏样本率"],
                 风险拒绝比=lambda x: x["坏账改善"] / x["样本占比"],
             )
         else:
             swap_in_data_amount = swap_in_data.copy()
+
+        swap_in_data = swap_in_data[['样本总数', '样本占比', '坏样本数', '坏样本率', 'LIFT值', '坏账改善', '风险拒绝比']].sort_index(key=lambda idx: idx.map(lambda x: {"原始样本": 0, "置换样本": 2}.get(x, 1)))
+        swap_in_data_amount = swap_in_data_amount[['样本总数', '样本占比', '坏样本数', '坏样本率', 'LIFT值', '坏账改善', '风险拒绝比']].sort_index(key=lambda idx: idx.map(lambda x: {"原始样本": 0, "置换样本": 2}.get(x, 1)))
 
         return swap_in_data, swap_in_data_amount
 
@@ -652,7 +772,7 @@ def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, s
                 _target = f"{col} {d}+"
 
                 # 在base数据上创建新的目标变量
-                _datasets = base[[feature] + amount_feature + [col]].copy()
+                _datasets = base[list(set([feature] + amount_feature + [col]))].copy()
                 _datasets[_target] = (_datasets[col] > d).astype(int)
 
                 # 递归调用处理当前逾期标签
@@ -690,3 +810,255 @@ def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, s
             swap_in_data_amount_final = reorder_columns(swap_in_data_amount_final)
 
         return swap_in_data_final, swap_in_data_amount_final
+
+
+swapout_report = ruleset_report
+swapout_report.__doc__ = ruleset_report.__doc__
+
+
+def swapin_report(base, test, swap_in_ruleset, feature, target="target", overdue=None, dpd=None, amount=None, origin_mask=None, tmp_col="swapinstep", **kwargs):
+    """SWAPIN 报告，逐步累加置入样本，评估每步的坏账改善效果
+
+    该函数按顺序将 swap_in_ruleset 中的每条规则逐步置入样本，逐步累加计算每步置入后的坏账率改善效果。
+    通过逐步累加的方式，可以观察每条规则对整体坏账改善的边际贡献。
+
+    :param base: pd.DataFrame, 有表现的数据集，用于建立分箱规则和计算基准坏账率
+    :param test: pd.DataFrame, 测试数据集（包含置入样本），需要预测风险
+    :param swap_in_ruleset: Rule 或 list[Rule], 置入规则列表，按传入顺序逐步置入样本
+    :param feature: str, 特征名称，用于在 base 上建立分箱规则并映射 test 的坏样本率
+    :param target: str, 目标变量名称，默认 "target"
+    :param overdue: list or str, 逾期天数字段名称，当传入时优先于 target 使用多逾期标签分析
+    :param dpd: list or int, 逾期定义方式，逾期天数 > dpd 为 1，其他为 0，需与 overdue 配合使用
+    :param amount: str, 金额字段名称，传入后额外输出按金额加权的分析报告
+    :param origin_mask: pd.Series(bool), 自定义原始样本掩码，True 表示该样本视为原始样本，默认 None（未命中任意规则的样本为原始样本）
+    :param tmp_col: str, 内部使用的临时列名，默认 "swapinstep"，避免与数据列名冲突
+    :param kwargs: sawpin_badrate_prediction_by_score 的其他参数，如 method、max_n_bins 等
+
+    :return:
+        当 amount=None 时返回 (swapin_data,)，否则返回 (swapin_data, swapin_data_amount)：
+
+        - swapin_data: pd.DataFrame，每行对应一条规则的置入结果，
+          列包含样本总数、样本占比、坏样本数、坏样本率、LIFT值、坏账改善、风险拒绝比
+        - swapin_data_amount: pd.DataFrame，按金额加权的分析报告，结构同上
+
+    **参考样例**
+
+    >>> # 单一 target 分析
+    >>> swap_in_ruleset = [
+    >>>     Rule("(当前履约机构数 < 22) & (自营资质分 >= 0) & (自营资质分 < 555)"),
+    >>>     Rule("(近6个月审批查询次数 < 3)"),
+    >>> ]
+    >>> swapin_data, swapin_data_amount = swapin_report(
+    >>>     base=swap_data,
+    >>>     test=swap_data,
+    >>>     swap_in_ruleset=swap_in_ruleset,
+    >>>     feature="自营资质分",
+    >>>     target="target",
+    >>>     amount="放款金额"
+    >>> )
+    >>> # 多逾期标签分析
+    >>> overdue_columns = ["MOB1"]  # 根据实际数据调整
+    >>> dpd_thresholds = [7, 3, 0]  # 逾期天数阈值
+    >>> swapin_data_multi, swapin_data_amount_multi = swapin_report(
+    >>>     base=swap_data,
+    >>>     test=swap_data,
+    >>>     swap_in_ruleset=swap_in_ruleset,
+    >>>     feature="自营资质分",
+    >>>     overdue=overdue_columns,
+    >>>     dpd=dpd_thresholds,
+    >>>     amount="放款金额"
+    >>> )
+    """
+    rules = swap_in_ruleset if isinstance(swap_in_ruleset, (list, tuple)) else [swap_in_ruleset]
+
+    if len(rules) == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    def _cols(x):
+        if x is None:
+            return set()
+        if isinstance(x, str):
+            return {x}
+        try:
+            return set(x)
+        except TypeError:
+            return {x}
+
+    def _predict(rule, df):
+        if df.empty:
+            return pd.Series(False, index=df.index)
+
+        r = rule.predict(df)
+        return (
+            r if isinstance(r, pd.Series)
+            else pd.Series(r, index=df.index)
+        ).fillna(False).astype(bool)
+
+    def _check_missing(df, cols, name):
+        miss = set(cols) - set(df.columns)
+        if miss:
+            raise ValueError(f"{name} missing columns: {sorted(miss)}")
+
+    def _safe_div(num, den):
+        return num / den if pd.notna(den) and den != 0 else pd.NA
+
+    def _recalc_metrics(df):
+        if df.empty or "原始样本" not in df.index:
+            return df
+
+        df = df.copy()
+        origin_pos = list(df.index).index("原始样本")
+
+        if isinstance(df.columns, pd.MultiIndex):
+            n_col = ("规则详情", "样本总数")
+            p_col = ("规则详情", "样本占比")
+
+            if n_col not in df.columns:
+                return df
+
+            origin_n = df.iloc[origin_pos][n_col]
+
+            if p_col in df.columns:
+                df[p_col] = _safe_div(df[n_col], origin_n)
+
+            for top in df.columns.get_level_values(0).unique():
+                if top == "规则详情":
+                    continue
+
+                bad_col = (top, "坏样本数")
+                br_col = (top, "坏样本率")
+                lift_col = (top, "LIFT值")
+                improve_col = (top, "坏账改善")
+                reject_col = (top, "风险拒绝比")
+
+                if bad_col not in df.columns or br_col not in df.columns:
+                    continue
+
+                origin_bad = df.iloc[origin_pos][bad_col]
+                origin_br = df.iloc[origin_pos][br_col]
+
+                if lift_col in df.columns:
+                    df[lift_col] = _safe_div(df[br_col], origin_br)
+
+                if improve_col in df.columns:
+                    den = df[n_col] + origin_n
+                    merged_br = (df[bad_col] + origin_bad) / den.mask(den.eq(0))
+                    df[improve_col] = _safe_div(origin_br - merged_br, origin_br)
+
+                if reject_col in df.columns and improve_col in df.columns and p_col in df.columns:
+                    df[reject_col] = df[improve_col] / df[p_col].mask(df[p_col].eq(0))
+
+        else:
+            origin_n = df.iloc[origin_pos]["样本总数"]
+            origin_bad = df.iloc[origin_pos]["坏样本数"]
+            origin_br = df.iloc[origin_pos]["坏样本率"]
+
+            df["样本占比"] = _safe_div(df["样本总数"], origin_n)
+            df["LIFT值"] = _safe_div(df["坏样本率"], origin_br)
+
+            den = df["样本总数"] + origin_n
+            merged_br = (df["坏样本数"] + origin_bad) / den.mask(den.eq(0))
+            df["坏账改善"] = _safe_div(origin_br - merged_br, origin_br)
+
+            df["风险拒绝比"] = df["坏账改善"] / df["样本占比"].mask(df["样本占比"].eq(0))
+
+        return df
+
+    def _rename_last_swap_sample(df):
+        if df.empty or "置换样本" not in df.index:
+            return df
+
+        df = df.copy()
+        idx = list(df.index)
+        last_pos = len(idx) - 1 - idx[::-1].index("置换样本")
+        idx[last_pos] = "通过样本"
+        df.index = idx
+        df.index.name = "规则详情"
+
+        return df
+
+    # base：只检查 target / overdue / amount
+    base_cols = _cols(amount)
+    if overdue is not None and dpd is not None:
+        base_cols |= _cols(overdue)
+    else:
+        base_cols |= _cols(target)
+
+    # test：只检查 amount / rule 入模变量
+    rule_cols = set()
+    for rule in rules:
+        rule_cols |= _cols(getattr(rule, "feature_names_in_", []))
+
+    test_cols = _cols(amount) | rule_cols
+
+    _check_missing(base, base_cols, "base")
+    _check_missing(test, test_cols, "test")
+
+    if tmp_col in base.columns or tmp_col in test.columns:
+        raise ValueError(f"{tmp_col} already exists in base/test.")
+
+    # 关键修复：
+    # 先在同一个 test 全量样本上计算每条规则命中结果；
+    # 原始样本 = 未命中任意规则的样本，和规则顺序无关。
+    rule_masks = [_predict(rule, test) for rule in rules]
+
+    if origin_mask is None:
+        hit_any = reduce(lambda x, y: x | y, rule_masks)
+        origin_mask = ~hit_any
+        candidate_mask = hit_any
+    else:
+        origin_mask = pd.Series(origin_mask, index=test.index).fillna(False).astype(bool)
+        candidate_mask = ~origin_mask
+        rule_masks = [m & candidate_mask for m in rule_masks]
+
+    used = pd.Series(False, index=test.index)
+
+    report = []
+    report_amount = []
+
+    for rule, rule_mask in zip(rules, rule_masks):
+        hit = rule_mask & ~used
+
+        if not hit.any():
+            continue
+
+        current_mask = origin_mask | used
+
+        step_test = pd.concat([
+            test.loc[current_mask].assign(**{tmp_col: 0}),
+            test.loc[hit].assign(**{tmp_col: 1}),
+        ], axis=0)
+
+        step_rule = Rule(f"{tmp_col} == 1")
+
+        r, ra = sawpin_badrate_prediction_by_score(
+            base=base,
+            test=step_test,
+            swap_in_ruleset=step_rule,
+            feature=feature,
+            target=target,
+            overdue=overdue,
+            dpd=dpd,
+            amount=amount,
+            **kwargs
+        )
+
+        r = r.rename(index={step_rule.expr: rule.expr})
+        ra = ra.rename(index={step_rule.expr: rule.expr})
+
+        if report:
+            r = r.drop(index="原始样本", errors="ignore")
+            ra = ra.drop(index="原始样本", errors="ignore")
+
+        report.append(r)
+        report_amount.append(ra)
+
+        used = used | hit
+
+    report = pd.concat(report, axis=0) if report else pd.DataFrame()
+    report_amount = pd.concat(report_amount, axis=0) if report_amount else pd.DataFrame()
+
+    report = _rename_last_swap_sample(_recalc_metrics(report))
+    report_amount = _rename_last_swap_sample(_recalc_metrics(report_amount))
+
+    return report, report_amount

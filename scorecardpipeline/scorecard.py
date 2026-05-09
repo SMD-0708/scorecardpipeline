@@ -18,6 +18,17 @@ from sklearn.utils.validation import check_is_fitted
 
 class BaseScoreTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, down_lmt=300, up_lmt=1000, greater_is_better=True, cutoff=None):
+        """评分转换器基类，将模型预测概率转换为标准评分
+
+        所有评分转换器均继承自此类，提供分数裁剪、截断和 cutoff 判定等通用功能。
+        子类需要实现 ``predict`` 方法和 ``_transform`` 方法。
+
+        :param down_lmt: 分数下限，默认 300
+        :param up_lmt: 分数上限，默认 1000
+        :param greater_is_better: 分数越高是否代表客户越优质，默认 True。
+            True 表示分数越高客户越优质（低风险），False 表示分数越低客户越优质
+        :param cutoff: 决策截断点，默认为 None（自动以 0.5 概率对应的分数作为 cutoff）
+        """
         self.down_lmt = down_lmt
         self.up_lmt = up_lmt
         self.greater_is_better = greater_is_better
@@ -25,6 +36,7 @@ class BaseScoreTransformer(BaseEstimator, TransformerMixin):
         self.fitted_ = False
 
     def __sklearn_is_fitted__(self):
+        """sklearn 检查是否已拟合"""
         return self.fitted_
 
     @abstractmethod
@@ -46,9 +58,46 @@ class BaseScoreTransformer(BaseEstimator, TransformerMixin):
 
 
 class StandardScoreTransformer(BaseScoreTransformer):
-    """Stretch the predicted probability to a normal distributed score."""
+    """将模型预测概率转换为标准分布评分的转换器
+
+    基于 PDO（Points to Double the Odds）公式，将模型的预测概率映射到指定区间的评分。
+    评分越高代表客户越优质（低违约风险），分数范围受 down_lmt / up_lmt 控制。
+
+    **评分公式**::
+
+        score = A - sgn * B * ln(odds)
+        其中 odds = p / (1 - p)，p 为预测违约概率
+        sgn = -1 (greater_is_better=True) 或 sgn = 1 (greater_is_better=False)
+        A = base_score + sgn * B * ln(base_odds)
+        B = pdo / ln(rate)
+
+    **参考样例**
+
+    >>> import numpy as np
+    >>> from scorecardpipeline.scorecard import StandardScoreTransformer
+    >>> # 生成模拟的违约概率
+    >>> proba = np.array([[0.05], [0.15], [0.30], [0.50]])
+    >>> transformer = StandardScoreTransformer(base_score=660, pdo=75, rate=2, bad_rate=0.15)
+    >>> transformer.fit(proba)
+    >>> scores = transformer.transform(proba)
+    >>> transformer.scorecard_scale()
+    >>> transformer.predict(proba)  # 二分类决策（基于 cutoff）
+    >>> # 分数反推概率
+    >>> transformer.inverse_transform(scores)
+    """
 
     def __init__(self, base_score=660, pdo=75, rate=2, bad_rate=0.15, down_lmt=300, up_lmt=1000, greater_is_better=True, cutoff=None):
+        """标准评分转换器
+
+        :param base_score: 基础分数，当 bad_rate 对应的 odds 时的评分，默认 660
+        :param pdo: Points to Double the Odds，odds 每增长 rate 倍分数增长的绝对值，默认 75
+        :param rate: odds 增长的倍率，默认 2，即 odds 每翻倍，分数增长 pdo 分
+        :param bad_rate: 基准违约率，用于计算 base_odds，默认 0.15，即 base_odds = 0.15/0.85
+        :param down_lmt: 分数下限，默认 300
+        :param up_lmt: 分数上限，默认 1000
+        :param greater_is_better: 分数越高是否代表客户越优质，默认 True
+        :param cutoff: 决策截断点，默认为 None（自动以 0.5 概率对应的分数作为 cutoff）
+        """
         super().__init__(down_lmt=down_lmt, up_lmt=up_lmt, greater_is_better=greater_is_better, cutoff=cutoff)
         self.base_score = base_score
         self.pdo = pdo
@@ -56,6 +105,13 @@ class StandardScoreTransformer(BaseScoreTransformer):
         self.bad_rate = bad_rate
 
     def fit(self, X, y=None, **fit_params):
+        """训练标准评分转换器，计算评分公式参数 A、B
+
+        :param X: 训练数据，通常为模型预测的违约概率（shape: [n_samples, n_features]）
+        :param y: 目标变量，此处不使用，仅为 sklearn 接口兼容性
+        :param fit_params: 其他拟合参数
+        :return: self，训练完成的 StandardScoreTransformer
+        """
         self._validate_data(X, reset=True, accept_sparse=False, dtype="numeric", copy=False, force_all_finite=True)
 
         base_score, down_lmt, up_lmt = self.base_score, self.down_lmt, self.up_lmt
@@ -101,6 +157,11 @@ class StandardScoreTransformer(BaseScoreTransformer):
         return scorecard_kedu
 
     def _transform(self, X):
+        """评分转换内部方法，将概率转换为分数
+
+        :param X: 概率数组（已校验）
+        :return: 分数数组
+        """
         check_is_fitted(self, ["A_", "B_", "sgn_"])
         Xt = self._validate_data(X, reset=False, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         # if not np.all((0 <= Xt) & (Xt <= 1)):
@@ -112,6 +173,11 @@ class StandardScoreTransformer(BaseScoreTransformer):
         return points
 
     def transform(self, X):
+        """将概率转换为分数
+
+        :param X: 概率数组，元素值应在 (0, 1) 区间
+        :return: 分数数组，与输入形状相同
+        """
         data = self._transform(X)
         if isinstance(X, DataFrame):
             columns = X.columns
@@ -120,6 +186,11 @@ class StandardScoreTransformer(BaseScoreTransformer):
         return data
 
     def predict(self, X):
+        """基于 cutoff 阈值进行二分类决策
+
+        :param X: 概率数组
+        :return: np.ndarray，二分类标签（0 或 1）
+        """
         scores = np.ravel(self._transform(X))
         if self.cutoff is None:
             cutoff = self._transform([[0.5]])[0][0]
@@ -134,6 +205,11 @@ class StandardScoreTransformer(BaseScoreTransformer):
             return (scores > cutoff).astype(np.int)
 
     def _inverse_transform(self, X):
+        """分数反推概率的内部方法
+
+        :param X: 分数数组（已校验）
+        :return: 概率数组
+        """
         check_is_fitted(self, ["A_", "B_", "sgn_"])
         Xt = check_array(X, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         down_lmt, up_lmt = self.down_lmt, self.up_lmt
@@ -144,6 +220,11 @@ class StandardScoreTransformer(BaseScoreTransformer):
         return probs
 
     def inverse_transform(self, X):
+        """将分数反推为概率
+
+        :param X: 分数数组，元素值应在 [down_lmt, up_lmt] 区间
+        :return: 概率数组
+        """
         data = self._inverse_transform(X)
         if isinstance(X, DataFrame):
             columns = X.columns
@@ -158,13 +239,44 @@ class StandardScoreTransformer(BaseScoreTransformer):
 
 
 class NPRoundStandardScoreTransformer(StandardScoreTransformer):
+    """标准评分转换器，输出非四舍五入的浮点分数
+
+    继承自 ``StandardScoreTransformer``，区别在于 ``_transform`` 使用
+    ``np.round`` 进行截断处理，而非 Python 原生的 round 函数。
+    其他行为与 ``StandardScoreTransformer`` 完全一致。
+
+    **参考样例**
+
+    >>> import numpy as np
+    >>> from scorecardpipeline.scorecard import NPRoundStandardScoreTransformer
+    >>> proba = np.array([[0.05], [0.15], [0.30], [0.50]])
+    >>> transformer = NPRoundStandardScoreTransformer(base_score=660, pdo=75, bad_rate=0.15)
+    >>> transformer.fit(proba)
+    >>> transformer.transform(proba)
+    """
 
     def __init__(self, base_score=660, pdo=75, bad_rate=0.15, down_lmt=300, up_lmt=1000, round_decimals=0, greater_is_better=True, cutoff=None):
+        """标准评分转换器（非四舍五入版）
+
+        :param base_score: 基础分数，默认 660
+        :param pdo: Points to Double the Odds，默认 75
+        :param bad_rate: 基准违约率，默认 0.15
+        :param down_lmt: 分数下限，默认 300
+        :param up_lmt: 分数上限，默认 1000
+        :param round_decimals: 小数位数，使用 np.round 进行截断，默认 0（即整数）
+        :param greater_is_better: 分数越高是否代表客户越优质，默认 True
+        :param cutoff: 决策截断点，默认 None
+        """
         self.round_decimals = round_decimals
         super(NPRoundStandardScoreTransformer, self).__init__(base_score=base_score, pdo=pdo, bad_rate=bad_rate, down_lmt=down_lmt, up_lmt=up_lmt,
                                                               greater_is_better=greater_is_better, cutoff=cutoff)
 
     def _transform(self, X):
+        """评分转换，使用 np.round 截断
+
+        :param X: 概率数组
+        :return: 截断后的分数数组
+        """
         points = super()._transform(X)
         decimals = self.round_decimals
         points = np.round(points, decimals=decimals)
@@ -172,14 +284,44 @@ class NPRoundStandardScoreTransformer(StandardScoreTransformer):
 
 
 class RoundStandardScoreTransformer(StandardScoreTransformer):
-    """Stretch the predicted probability to a normal distributed score."""
+    """标准评分转换器，输出四舍五入的整数分数
+
+    继承自 ``StandardScoreTransformer``，区别在于 ``_transform`` 使用
+    Python 原生 ``round`` 函数进行四舍五入，而非 ``np.round`` 截断。
+    其他行为与 ``StandardScoreTransformer`` 完全一致。
+
+    **参考样例**
+
+    >>> import numpy as np
+    >>> from scorecardpipeline.scorecard import RoundStandardScoreTransformer
+    >>> proba = np.array([[0.05], [0.15], [0.30], [0.50]])
+    >>> transformer = RoundStandardScoreTransformer(base_score=660, pdo=75, bad_rate=0.15, round_decimals=0)
+    >>> transformer.fit(proba)
+    >>> transformer.transform(proba)  # 输出整数评分
+    """
 
     def __init__(self, base_score=660, pdo=75, bad_rate=0.15, down_lmt=300, up_lmt=1000, round_decimals=0, greater_is_better=True, cutoff=None):
+        """标准评分转换器（四舍五入版）
+
+        :param base_score: 基础分数，默认 660
+        :param pdo: Points to Double the Odds，默认 75
+        :param bad_rate: 基准违约率，默认 0.15
+        :param down_lmt: 分数下限，默认 300
+        :param up_lmt: 分数上限，默认 1000
+        :param round_decimals: 小数位数，使用 round 进行四舍五入，默认 0（即整数）
+        :param greater_is_better: 分数越高是否代表客户越优质，默认 True
+        :param cutoff: 决策截断点，默认 None
+        """
         self.round_decimals = round_decimals
         super(RoundStandardScoreTransformer, self).__init__(base_score=base_score, pdo=pdo, bad_rate=bad_rate, down_lmt=down_lmt, up_lmt=up_lmt,
                                                             greater_is_better=greater_is_better, cutoff=cutoff)
 
     def _transform(self, X):
+        """评分转换，使用 round 进行四舍五入
+
+        :param X: 概率数组
+        :return: 四舍五入后的分数数组
+        """
         points = super()._transform(X)
         decimals = self.round_decimals
         points = np.array([[round(x[0], decimals)] for x in points])
@@ -187,20 +329,60 @@ class RoundStandardScoreTransformer(StandardScoreTransformer):
 
 
 class BoxCoxScoreTransformer(BaseScoreTransformer):
+    """基于 Box-Cox 变换的概率转评分转换器
+
+    使用 Box-Cox 变换将概率分布转换为正态分布，再通过 MinMaxScaler 缩放到指定分数区间。
+    与 StandardScoreTransformer 不同，Box-Cox 变换无需预设 bad_rate，可自动学习最优变换参数。
+
+    **评分公式**::
+
+        x' = boxcox(x, lambda)  # 自动学习的 lambda 参数
+        score = scaler(x')      # MinMaxScaler 缩放到 [down_lmt, up_lmt]
+
+    **参考样例**
+
+    >>> import numpy as np
+    >>> from scorecardpipeline.scorecard import BoxCoxScoreTransformer
+    >>> proba = np.array([[0.05], [0.15], [0.30], [0.50], [0.80]])
+    >>> transformer = BoxCoxScoreTransformer(down_lmt=300, up_lmt=1000, greater_is_better=True)
+    >>> transformer.fit(proba)
+    >>> scores = transformer.transform(proba)
+    >>> transformer.predict(proba)  # 二分类决策
+    >>> transformer.inverse_transform(scores)  # 分数反推概率
+    """
+
     def __init__(self, down_lmt=300, up_lmt=1000, greater_is_better=True, cutoff=None):
+        """Box-Cox 评分转换器
+
+        :param down_lmt: 分数下限，默认 300
+        :param up_lmt: 分数上限，默认 1000
+        :param greater_is_better: 分数越高是否代表客户越优质，默认 True
+        :param cutoff: 决策截断点，默认 None
+        """
         super().__init__(down_lmt=down_lmt, up_lmt=up_lmt, greater_is_better=greater_is_better, cutoff=cutoff)
 
     @staticmethod
     def _box_cox_optimize(x):
-        """Find and return optimal lambda parameter of the Box-Cox transform by MLE, for observed data x.
+        """使用 MLE 找到 Box-Cox 变换的最优 lambda 参数
 
-        We here use scipy builtins which uses the brent optimizer.
+        使用 scipy.stats.boxcox 的 brent 优化器求解。
+        注意：NaN 值会影响结果，调用前需确保数据中无 NaN。
+
+        :param x: 一维数组，元素值必须严格大于 0
+        :return: float，最优 lambda 值
         """
         # the computation of Lambda is influenced by NaNs so we need to get rid of them
         _, lmbda = stats.boxcox(x, lmbda=None)
         return lmbda
 
     def fit(self, X, y=None, **fit_params):
+        """训练 Box-Cox 评分转换器，学习每列的最优 lambda 参数
+
+        :param X: 训练数据，违约概率数组，元素值须严格在 (0, 1) 区间
+        :param y: 目标变量，此处不使用，仅为 sklearn 接口兼容性
+        :param fit_params: 其他拟合参数
+        :return: self，训练完成的 BoxCoxScoreTransformer
+        """
         X = check_array(X, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         if np.min(X) <= 0 or np.max(X) >= 1:
             raise ValueError("The Box-Cox score transformation can only be applied to strictly positive probabilities")
@@ -215,6 +397,11 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
         return self
 
     def _transform(self, X):
+        """评分转换内部方法，将概率通过 Box-Cox 变换转换为分数
+
+        :param X: 概率数组（已校验，元素值须在 (0, 1) 区间）
+        :return: 分数数组
+        """
         check_is_fitted(self, ["lambdas_", "scaler_"])
         X = check_array(X, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         if np.min(X) < 0 or np.max(X) > 1:
@@ -226,6 +413,11 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
         return self.scaler_.transform(X)
 
     def transform(self, X):
+        """将概率转换为分数
+
+        :param X: 概率数组，元素值须严格在 (0, 1) 区间
+        :return: 分数数组，与输入形状相同
+        """
         data = self._transform(X)
         if isinstance(X, DataFrame):
             columns = X.columns
@@ -234,6 +426,11 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
         return data
 
     def predict(self, X):
+        """基于 cutoff 阈值进行二分类决策
+
+        :param X: 概率数组
+        :return: np.ndarray，二分类标签（0 或 1）
+        """
         scores = np.ravel(self._transform(X))
         if self.cutoff is None:
             lmbda = self.lambdas_[0]
@@ -260,6 +457,11 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
             return (scores > cutoff).astype(np.int)
 
     def _inverse_transform(self, X):
+        """分数反推概率的内部方法
+
+        :param X: 分数数组（已校验，元素值须在 [down_lmt, up_lmt] 区间）
+        :return: 概率数组
+        """
         check_is_fitted(self, ["lambdas_", "scaler_"])
         X = check_array(X, accept_sparse=False, dtype="numeric", copy=True, force_all_finite=True)
         if np.min(X) < self.down_lmt or np.max(X) > self.up_lmt:
@@ -272,6 +474,11 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
         return X_inv
 
     def inverse_transform(self, X):
+        """将分数反推为概率
+
+        :param X: 分数数组，元素值须在 [down_lmt, up_lmt] 区间
+        :return: 概率数组
+        """
         data = self._inverse_transform(X)
         if isinstance(X, DataFrame):
             columns = X.columns
@@ -281,7 +488,12 @@ class BoxCoxScoreTransformer(BaseScoreTransformer):
 
     @staticmethod
     def _box_cox_inverse_tranform(x, lmbda):
-        """Return inverse-transformed input x following Box-Cox inverse transform with parameter lambda"""
+        """Box-Cox 逆变换
+
+        :param x: 变换后的值
+        :param lmbda: Box-Cox 变换参数
+        :return: 原始值
+        """
         if lmbda == 0:
             x_inv = np.exp(x)
         else:

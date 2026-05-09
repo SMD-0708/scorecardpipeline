@@ -43,6 +43,19 @@ from .processing import Combiner
 class SelectorMixin(BaseEstimator, TransformerMixin):
 
     def __init__(self):
+        """特征筛选器基类，继承自 sklearn 的 SelectorMixin
+
+        提供通用的 fit/transform 模式，``fit`` 后通过 ``transform`` 筛选特征列。
+        子类需实现 ``fit`` 方法，在其中设置 ``select_columns``（保留的特征列名列表）、
+        ``scores_``（各特征评分，pd.Series）和 ``dropped``（剔除原因，pd.DataFrame）属性。
+
+        **属性字段**
+
+        :param select_columns: list，``fit`` 后保留的特征列名列表
+        :param scores_: pd.Series，``fit`` 后各特征的评分（越高越可能被保留）
+        :param dropped: pd.DataFrame，包含 ``variable`` 和 ``rm_reason`` 两列，记录剔除特征及其原因
+        :param fitted_: bool，是否已完成拟合
+        """
         self.select_columns = None
         self.scores_ = None
         self.dropped = None
@@ -54,6 +67,11 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
         return self.fitted_
 
     def transform(self, x):
+        """根据 ``select_columns`` 筛选保留特征列
+
+        :param x: 原始数据集
+        :return: pd.DataFrame，仅包含保留特征列的数据集
+        """
         check_is_fitted(self, "select_columns")
         return x[[col for col in self.select_columns if col in x.columns]]
 
@@ -115,6 +133,11 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
         return fig
 
     def __call__(self, *args, **kwargs):
+        """支持以函数方式调用：直接 fit 并返回保留的特征列名
+
+        >>> selector = LiftSelector(threshold=3.0)
+        >>> selected_cols = selector(X, y)  # fit 并返回 select_columns
+        """
         self.fit(*args, **kwargs)
         return self.select_columns
 
@@ -123,8 +146,26 @@ class SelectorMixin(BaseEstimator, TransformerMixin):
 
 
 class TypeSelector(SelectorMixin):
+    """基于数据类型筛选特征的 Selector
+
+    根据 dtype_include / dtype_exclude 条件筛选 DataFrame 中的列。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import TypeSelector
+    >>> df = pd.DataFrame({"a": [1,2], "b": ["x","y"], "c": [1.0, 2.0]})
+    >>> selector = TypeSelector(dtype_include="number")
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, dtype_include=None, dtype_exclude=None, exclude=None):
+        """按数据类型筛选特征
+
+        :param dtype_include: 包含的数据类型（如 "number", "object", "datetime" 等），默认 None
+        :param dtype_exclude: 排除的数据类型，默认 None
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        """
         super().__init__()
         self.dtype_include = dtype_include
         self.dtype_exclude = dtype_exclude
@@ -133,9 +174,9 @@ class TypeSelector(SelectorMixin):
     def fit(self, x: pd.DataFrame, y=None, **fit_params):
         if not hasattr(x, 'iloc'):
             raise ValueError("make_column_selector can only be applied to pandas dataframes")
-        
+
         self.n_features_in_ = x.shape[1]
-        
+
         if self.exclude:
             if not isinstance(self.exclude, (list, tuple, np.ndarray)):
                 self.exclude = [self.exclude]
@@ -146,19 +187,37 @@ class TypeSelector(SelectorMixin):
             cols = x.select_dtypes(include=self.dtype_include, exclude=self.dtype_exclude).columns
         else:
             cols = x.columns
-        
+
         self.scores_ = x.dtypes
         self.select_columns = list(set(cols.tolist()))
         if self.exclude:
             self.select_columns = list(set(self.select_columns + self.exclude))
-        
+
         self.dropped = pd.DataFrame([(col, f"data type or name not match") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
         self.fitted_ = True
         return self
 
 
 class RegexSelector(SelectorMixin):
+    """基于正则表达式筛选特征列名的 Selector
+
+    根据列名是否匹配正则表达式来筛选特征。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import RegexSelector
+    >>> df = pd.DataFrame({"feature_a": [1,2], "feature_b": [3,4], "target": [0,1]})
+    >>> selector = RegexSelector(pattern=r"^feature_")
+    >>> selector.fit_transform(df)
+    """
+
     def __init__(self, pattern=None, exclude=None):
+        """按列名正则匹配筛选特征
+
+        :param pattern: 正则表达式字符串，列名匹配该表达式则被保留
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        """
         super().__init__()
         self.pattern = pattern
         self.exclude = exclude
@@ -189,6 +248,12 @@ class RegexSelector(SelectorMixin):
 
 
 def value_ratio(x, value):
+    """计算数组或 DataFrame 中指定值的占比
+
+    :param x: pd.DataFrame 或一维数组
+    :param value: 需要统计占比的值（默认为 np.nan）
+    :return: float（DataFrame 时返回每列的占比 Series）
+    """
     if isinstance(x, pd.DataFrame):
         return np.mean(_get_mask(x.values, value), axis=0)
 
@@ -196,6 +261,12 @@ def value_ratio(x, value):
 
 
 def mode_ratio(x, dropna=True):
+    """计算数组的众数及其占比
+
+    :param x: 一维数组或 list
+    :param dropna: 是否排除 NaN 值，默认 True
+    :return: tuple，(众数值, 众数占比)
+    """
     if isinstance(x, (list, np.ndarray)):
         x = pd.Series(x)
 
@@ -204,8 +275,28 @@ def mode_ratio(x, dropna=True):
 
 
 class NullSelector(SelectorMixin):
+    """基于缺失率筛选特征的 Selector
+
+    剔除缺失值（由 missing_values 指定）占比超过 threshold 的特征。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> import numpy as np
+    >>> from scorecardpipeline.feature_selection import NullSelector
+    >>> df = pd.DataFrame({"a": [1, np.nan, 3], "b": [1, 2, 3], "c": [np.nan, np.nan, np.nan]})
+    >>> selector = NullSelector(threshold=0.5)
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, threshold=0.95, missing_values=np.nan, exclude=None, **kwargs):
+        """按缺失率筛选特征
+
+        :param threshold: 缺失率阈值，缺失率 >= threshold 的特征将被剔除，默认 0.95
+        :param missing_values: 视为缺失的值，默认 np.nan
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param kwargs: 其他参数（保留给 sklearn 兼容性）
+        """
         super().__init__()
         self.exclude = exclude
         self.threshold = threshold
@@ -237,8 +328,28 @@ class NullSelector(SelectorMixin):
 
 
 class ModeSelector(SelectorMixin):
+    """基于众数占比筛选特征的 Selector
+
+    剔除单一值出现占比超过 threshold 的特征（常用于剔除方差极低的常量列）。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import ModeSelector
+    >>> df = pd.DataFrame({"a": [1, 1, 1], "b": [1, 2, 3], "c": [0, 0, 1]})
+    >>> selector = ModeSelector(threshold=0.8)
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, threshold=0.95, exclude=None, dropna=True, n_jobs=None, **kwargs):
+        """按众数占比筛选特征
+
+        :param threshold: 众数占比阈值，众数占比 >= threshold 的特征将被剔除，默认 0.95
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param dropna: 计算众数时是否排除 NaN，默认 True
+        :param n_jobs: 并行计算的 worker 数，默认 None（单进程）
+        :param kwargs: 其他参数
+        """
         super().__init__()
         self.dropna = dropna
         self.exclude = exclude
@@ -271,17 +382,26 @@ class ModeSelector(SelectorMixin):
 
 
 class CardinalitySelector(SelectorMixin):
-    """Feature selection via categorical feature's cardinality.
+    """基于类别唯一值数量筛选特征的 Selector
+
+    剔除唯一值数量（cardinality）超过 threshold 的特征。
 
     **参考样例**
 
     >>> import pandas as pd
     >>> from scorecardpipeline.feature_selection import CardinalitySelector
-    >>> x = pd.DataFrame({"f2": ["F", "м", "F"], "f3": ["M1", "M2", "м3"]})
-    >>> cs = CardinalitySelector(threshold=2)
-    >>> cs.fit_transform(x)
+    >>> df = pd.DataFrame({"f1": ["A", "B", "A"], "f2": ["X", "Y", "Z"], "f3": [1, 2, 3]})
+    >>> selector = CardinalitySelector(threshold=2)
+    >>> selector.fit_transform(df)
     """
+
     def __init__(self, threshold=10, exclude=None, dropna=True):
+        """按唯一值数量筛选特征
+
+        :param threshold: 唯一值数量阈值，唯一值数量 > threshold 的特征将被剔除，默认 10
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param dropna: 计算唯一值时是否排除 NaN，默认 True
+        """
         super().__init__()
         self.exclude = exclude
         self.threshold = threshold
@@ -307,6 +427,22 @@ class CardinalitySelector(SelectorMixin):
 
 
 def IV(x, y, regularization=1.0):
+    """计算特征的信息价值（Information Value, IV）
+
+    IV 是评分卡建模中衡量特征区分能力的常用指标，计算方式为：
+
+    **公式**::
+
+        IV = sum((Distr_Good - Distr_Bad) * ln(Distr_Good / Distr_Bad + 1e-10))
+
+    其中 Distr_Good 和 Distr_Bad 分别是好/坏样本在各分箱中的分布占比。
+    IV 越大，特征对目标变量的区分能力越强。经验阈值：IV < 0.02 无用，0.02-0.1 弱，0.1-0.3 中，0.3-0.5 强，> 0.5 极强（可能过拟合）。
+
+    :param x: 特征数组（一维）
+    :param y: 目标变量（0/1 二分类标签）
+    :param regularization: 平滑正则化参数，防止除零，默认 1.0
+    :return: float，IV 值
+    """
     uniques = np.unique(x)
     n_cats = len(uniques)
 
@@ -335,6 +471,14 @@ def IV(x, y, regularization=1.0):
 
 
 def _IV(x, y, regularization=1.0, n_jobs=None):
+    """批量计算 DataFrame 中每个特征的 IV 值（内部函数）
+
+    :param x: pd.DataFrame 或二维数组
+    :param y: 目标变量数组
+    :param regularization: 平滑正则化参数，默认 1.0
+    :param n_jobs: 并行计算的 worker 数，默认 None
+    :return: np.ndarray，各特征 IV 值
+    """
     x = check_array(x, dtype=None, force_all_finite=True, ensure_2d=True)
     le = LabelEncoder()
     y = le.fit_transform(y)
@@ -346,8 +490,31 @@ def _IV(x, y, regularization=1.0, n_jobs=None):
 
 
 class InformationValueSelector(SelectorMixin):
+    """基于信息价值（IV）筛选特征的 Selector
+
+    计算每个特征的 IV 值，保留 IV >= threshold 的特征。特征会先经过
+    Combiner 分箱（可选）或直接使用原始值计算 IV。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import InformationValueSelector
+    >>> df = pd.DataFrame({"a": [1,2,3,4], "b": [1,1,0,0], "target": [0,1,1,0]})
+    >>> selector = InformationValueSelector(threshold=0.02)
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, threshold=0.02, target="target", regularization=1.0, methods=None, n_jobs=None, combiner=None, **kwargs):
+        """按 IV 值筛选特征
+
+        :param threshold: IV 阈值，IV < threshold 的特征将被剔除，默认 0.02
+        :param target: 数据集中目标变量的列名，默认 "target"
+        :param regularization: IV 计算时的平滑正则化参数，防止除零，默认 1.0
+        :param methods: 分箱方法（传入则先分箱再算 IV），可选 "chi", "dt", "quantile", "step", "kmeans", "cart", "mdlp", "uniform"
+        :param n_jobs: 并行计算的 worker 数，默认 None
+        :param combiner: 提前训练好的 Combiner，默认 None
+        :param kwargs: Combiner 的其他参数
+        """
         super().__init__()
         self.dropped = None
         self.select_columns = None
@@ -390,15 +557,21 @@ class InformationValueSelector(SelectorMixin):
 
 
 def LIFT(y_pred, y_true):
-    """Calculate lift according to label data.
+    """计算 LIFT 值
 
-    **参考样例**
+    LIFT 衡量预测结果中某一类（如坏样本）的占比相对于整体基线的提升程度。
+    计算方式：取 y_pred 中某个唯一值对应的坏样本率，除以整体的坏样本率。
 
-    >>> import numpy as np
-    >>> y_true = np.array([0, 1, 1, 0, 1, 1, 0, 1, 1])
-    >>> y_pred = np.array([1, 0, 1, 0, 1, 1, 1, 1, 1])
-    >>> LIFT(y_true, y_pred) # (5 / 7) / (6 / 9)
-    1.0714285714285716
+    **公式**::
+
+        LIFT = (命中型坏样本率) / (整体坏样本率)
+             = [count(y_true==1 & y_pred==v) / count(y_pred==v)] / mean(y_true)
+
+    LIFT > 1 表示该预测分组相比随机有一定区分能力，越大区分能力越强。
+
+    :param y_pred: 预测结果数组（如分箱标签或规则命中标记）
+    :param y_true: 真实标签数组（0/1 二分类）
+    :return: float，最大 LIFT 值
     """
     if len(np.unique(y_pred)) <= 1:
         return 1.0
@@ -419,22 +592,29 @@ def LIFT(y_pred, y_true):
 
 
 class LiftSelector(SelectorMixin):
-    """Feature selection via lift score.
+    """基于 LIFT 分数筛选特征的 Selector
 
-    **属性字段**
+    对特征进行分箱后计算每个特征的 LIFT 值，保留 LIFT >= threshold 的特征。
+    特征会先经过 Combiner 分箱（可选）或直接使用原始值计算 LIFT。
 
-    :param threshold_: float. The threshold value used for feature selection.
-    :param scores_ : array-like of shape (n_features,). Lift scores of features.
-    :param select_columns : array-like
-    :param dropped : DataFrame
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import LiftSelector
+    >>> df = pd.DataFrame({"a": [1,2,3,4,5], "b": [1,1,0,0,1], "target": [0,1,1,0,1]})
+    >>> selector = LiftSelector(threshold=1.5)
+    >>> selector.fit_transform(df)
     """
+
     def __init__(self, target="target", threshold=3.0, n_jobs=None, methods=None, combiner=None, **kwargs):
-        """
-        :param target: target
-        :param threshold: float or str (default=3.0). Feature which has a lift score greater than `threshold` will be kept.
-        :param n_jobs: int or None, (default=None). Number of parallel.
-        :param combiner: Combiner
-        :param methods: Combiner's methods
+        """按 LIFT 值筛选特征
+
+        :param target: 数据集中目标变量的列名，默认 "target"
+        :param threshold: LIFT 阈值，LIFT < threshold 的特征将被剔除，默认 3.0
+        :param n_jobs: 并行计算的 worker 数，默认 None
+        :param methods: 分箱方法，可选 "chi", "dt", "quantile", "step", "kmeans", "cart", "mdlp", "uniform"
+        :param combiner: 提前训练好的 Combiner，默认 None
+        :param kwargs: Combiner 的其他参数
         """
         super().__init__()
         self.threshold = threshold
@@ -464,11 +644,6 @@ class LiftSelector(SelectorMixin):
         else:
             xt = x.copy()
 
-        # _lift = {}
-        # for c in tqdm(xt.columns):
-        #     _lift[c] = LIFT(xt[c], y)
-        # self.scores_ = pd.Series(_lift)
-        
         self.scores_ = pd.Series(Parallel(n_jobs=self.n_jobs)(delayed(LIFT)(xt[c], y) for c in xt.columns), index=xt.columns)
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ >= self.threshold]).index.tolist() + [self.target]))
@@ -478,9 +653,26 @@ class LiftSelector(SelectorMixin):
 
 
 class VarianceSelector(SelectorMixin):
-    """Feature selector that removes all low-variance features."""
+    """基于方差筛选特征的 Selector
+
+    剔除方差低于 threshold 的特征。threshold=0 时会额外使用峰值（max-min）比较，
+    避免常量特征因数值精度问题产生的误差。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import VarianceSelector
+    >>> df = pd.DataFrame({"a": [1,1,1], "b": [1,2,3], "c": [0,1,2]})
+    >>> selector = VarianceSelector(threshold=0.1)
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, threshold=0.0, exclude=None):
+        """按方差筛选特征
+
+        :param threshold: 方差阈值，方差 <= threshold 的特征将被剔除，默认 0.0
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        """
         super().__init__()
         self.threshold = threshold
         if exclude is not None:
@@ -490,7 +682,7 @@ class VarianceSelector(SelectorMixin):
 
     def fit(self, x, y=None):
         self.n_features_in_ = x.shape[1]
-        
+
         if hasattr(x, "toarray"):  # sparse matrix
             _, scores = mean_variance_axis(x, axis=0)
             if self.threshold == 0:
@@ -521,6 +713,18 @@ class VarianceSelector(SelectorMixin):
 
 
 def VIF(x, n_jobs=None, missing=-1):
+    """计算方差膨胀因子（Variance Inflation Factor, VIF）
+
+    VIF 衡量线性回归中每个特征的多重共线性程度。计算方式为：
+    用其他特征作为自变量回归当前特征，VIF = 1 / (1 - R²)。
+
+    VIF 越大，多重共线性越严重。经验阈值：VIF > 4 存在共线性问题，> 10 严重共线性。
+
+    :param x: pd.DataFrame，特征数据集
+    :param n_jobs: 并行计算的 worker 数，默认 None
+    :param missing: 缺失值填充值，默认 -1
+    :return: pd.Series，各特征的 VIF 值
+    """
     columns = x.columns
     x = x.fillna(missing).values
     lr = partial(lambda x, y: LinearRegression(fit_intercept=False).fit(x, y).predict(x))
@@ -531,14 +735,27 @@ def VIF(x, n_jobs=None, missing=-1):
 
 
 class VIFSelector(SelectorMixin):
+    """基于方差膨胀因子（VIF）筛选特征的 Selector
+
+    VIF 越高，多重共线性的影响越严重。在金融风控中通常使用经验法则：
+    若 VIF > 4，则认为存在多重共线性问题。计算较消耗资源，数据维度大时慎用。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import VIFSelector
+    >>> df = pd.DataFrame({"a": [1,2,3], "b": [2,4,6], "c": [1,3,5]})  # b 与 a 高度相关
+    >>> selector = VIFSelector(threshold=4.0)
+    >>> selector.fit_transform(df)
+    """
 
     def __init__(self, threshold=4.0, exclude=None, missing=-1, n_jobs=None):
-        """VIF越高，多重共线性的影响越严重, 在金融风险中我们使用经验法则:若VIF>4，则我们认为存在多重共线性, 计算比较消耗资源, 如果数据维度较大的情况下, 尽量不要使用
+        """按 VIF 值筛选特征
 
-        :param exclude: 数据集中需要强制保留的变量
-        :param threshold: 阈值, VIF 大于 threshold 即剔除该特征
-        :param missing: 缺失值默认填充 -1
-        :param n_jobs: 线程数
+        :param threshold: VIF 阈值，VIF >= threshold 的特征将被剔除，默认 4.0
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param missing: 缺失值默认填充值，默认 -1
+        :param n_jobs: 并行计算的 worker 数，默认 None
         """
         super().__init__()
         self.threshold = threshold
@@ -552,13 +769,11 @@ class VIFSelector(SelectorMixin):
     def fit(self, x: pd.DataFrame, y=None):
         if self.exclude:
             x = x.drop(columns=self.exclude)
-        
+
         self.n_features_in_ = x.shape[1]
-        
-        # vif = partial(variance_inflation_factor, np.matrix(x.fillna(self.missing)))
-        # self.scores_ = pd.Series(Parallel(n_jobs=None)(delayed(vif)(i) for i in range(x.shape[1])), index=x.columns)
+
         self.scores_ = VIF(x, missing=self.missing, n_jobs=self.n_jobs)
-        
+
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
         self.select_columns = list(set((self.scores_[self.scores_ < self.threshold]).index.tolist() + self.exclude))
         self.dropped = pd.DataFrame([(col, f"VIF >= {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
@@ -567,7 +782,29 @@ class VIFSelector(SelectorMixin):
 
 
 class CorrSelector(SelectorMixin):
+    """基于相关性筛选特征的 Selector
+
+    通过相关性矩阵剔除与已有特征相关性过高的特征。
+    当两个特征的相关性超过 threshold 时，保留权重（weights）较高的特征。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import CorrSelector
+    >>> df = pd.DataFrame({"a": [1,2,3], "b": [2,4,6], "c": [1,3,5]})
+    >>> selector = CorrSelector(threshold=0.9)
+    >>> selector.fit_transform(df)
+    """
+
     def __init__(self, threshold=0.7, method="pearson", weights=None, exclude=None, **kwargs):
+        """按特征相关性筛选特征
+
+        :param threshold: 相关系数阈值，|corr| > threshold 时触发剔除，默认 0.7
+        :param method: 相关系数计算方法，默认 "pearson"，还支持 "spearman", "kendall"
+        :param weights: 特征重要性权重（pd.Series 或 list），权重高的特征优先保留，默认 None
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param kwargs: pd.DataFrame.corr() 的其他参数
+        """
         super().__init__()
         self.threshold = threshold
         self.method = method
@@ -583,9 +820,9 @@ class CorrSelector(SelectorMixin):
             x = x.drop(columns=self.exclude)
 
         self.n_features_in_ = x.shape[1]
-        
+
         _weight = pd.Series(np.zeros(self.n_features_in_), index=x.columns)
-        
+
         if self.weights is not None:
             if isinstance(self.weights, pd.Series):
                 _weight_columns = list(set(self.weights.index) & set(x.columns))
@@ -599,20 +836,6 @@ class CorrSelector(SelectorMixin):
         corr = x.corr(method=self.method, **self.kwargs)
         self.scores_ = corr
         self.threshold = _calculate_threshold(self, self.scores_, self.threshold)
-
-        # corr_matrix = self.scores_.values
-        # mask = np.full(self.n_features_in_, True, dtype=bool)
-        # for i in range(self.n_features_in_):
-        #     if not mask[i]:
-        #         continue
-        #     for j in range(i + 1, self.n_features_in_):
-        #         if not mask[j]:
-        #             continue
-        #         if abs(corr_matrix[i, j]) < self.threshold:
-        #             continue
-        #         mask[j] = False
-        #
-        # self.select_columns = list(set([c for i, c in enumerate(x.columns) if mask[i]] + self.exclude))
 
         drops = []
         ix, cn = np.where(np.triu(corr.values, 1) > self.threshold)
@@ -651,6 +874,15 @@ class CorrSelector(SelectorMixin):
 
 
 def _psi_score(expected, actual):
+    """计算单个特征的 PSI（Population Stability Index，群体稳定性指标）
+
+    PSI 衡量实际分布与期望分布之间的差异，广泛用于评估特征在跨时间或跨数据集上的稳定性。
+    PSI < 0.1 表示分布稳定，0.1-0.2 表示略有变化，> 0.2 表示显著变化。
+
+    :param expected: 期望分布（基准数据集），通常为训练集
+    :param actual: 实际分布（当前数据集），通常为测试集
+    :return: float，PSI 值
+    """
     n_expected = len(expected)
     n_actual = len(actual)
 
@@ -663,11 +895,22 @@ def _psi_score(expected, actual):
         expected_rate = expected_cnt / n_expected
         actual_rate = actual_cnt / n_actual
         psi.append((actual_rate - expected_rate) * np.log(actual_rate / expected_rate))
-    
+
     return sum(psi)
 
 
 def PSI(train, test, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    """批量计算 DataFrame 中每个特征的 PSI 值（内部函数）
+
+    使用交叉验证方式，将 train 分为多折，计算每折的 PSI 后取平均。
+
+    :param train: 训练/基准数据（pd.DataFrame 或 np.ndarray）
+    :param test: 测试/实际数据（pd.DataFrame 或 np.ndarray）
+    :param n_jobs: 并行计算的 worker 数，默认 None
+    :param verbose: 是否打印进度信息，默认 0
+    :param pre_dispatch: 任务分发策略，默认 '2*n_jobs'
+    :return: np.ndarray，各特征的 PSI 均值
+    """
     parallel = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
     n_cols = train.shape[1] if hasattr(train, 'shape') else len(train.columns)
     scores = parallel(delayed(_psi_score)(train.iloc[:, i] if hasattr(train, 'iloc') else train[:, i], test.iloc[:, i] if hasattr(test, 'iloc') else test[:, i]) for i in range(n_cols))
@@ -675,8 +918,34 @@ def PSI(train, test, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
 
 
 class PSISelector(SelectorMixin):
+    """基于群体稳定性指标（PSI）筛选特征的 Selector
+
+    通过交叉验证方式计算每个特征在训练集内部不同折之间的 PSI 均值，
+    保留 PSI < threshold（分布稳定）的特征。
+
+    **参考样例**
+
+    >>> import pandas as pd
+    >>> from scorecardpipeline.feature_selection import PSISelector
+    >>> df_train = pd.DataFrame({"a": [1,2,3,4], "b": [1,2,3,4]})
+    >>> df_test = pd.DataFrame({"a": [1,2,3,5], "b": [1,2,3,4]})
+    >>> selector = PSISelector(threshold=0.1)
+    >>> # 注意：PSISelector 内部会进行 train/test 分割来计算 PSI
+    >>> selector.fit(df_train)
+    """
 
     def __init__(self, threshold=0.1, cv=None, method=None, exclude=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs', **kwargs):
+        """按 PSI 值筛选特征
+
+        :param threshold: PSI 阈值，PSI >= threshold 的特征将被剔除，默认 0.1
+        :param cv: 交叉验证折数，默认 None（使用 StratifiedKFold(3)）
+        :param method: 分箱方法（传入则先分箱再算 PSI），可选 "chi", "dt", "quantile", "step", "kmeans", "cart", "mdlp", "uniform"
+        :param exclude: 强制保留的列名（list 或 str），默认 None
+        :param n_jobs: 并行计算的 worker 数，默认 None
+        :param verbose: 是否打印进度信息，默认 0
+        :param pre_dispatch: 任务分发策略，默认 '2*n_jobs'
+        :param kwargs: Combiner 的其他参数
+        """
         super().__init__()
         self.threshold = threshold
         self.cv = cv
@@ -726,8 +995,35 @@ class PSISelector(SelectorMixin):
 
 
 class NullImportanceSelector(SelectorMixin):
-    
+    """基于 Null Importance 筛选特征的 Selector
+
+    通过比较特征重要性（基于 shuffle 前后的差异）来识别真正有预测能力的特征。
+    核心思想：如果特征在目标变量被打乱（shuffle）后仍然具有高重要性，则该重要性是虚假的。
+    采用多次交叉验证 shuffle 的方式估计 Null Distribution。
+
+    :param threshold: 阈值。> 1.0 时取分数最高的前 threshold 个特征；<= 1.0 时保留分数 > threshold 的特征，默认 1.0
+
+    **参考样例**
+
+    >>> from sklearn.ensemble import GradientBoostingClassifier
+    >>> from scorecardpipeline.feature_selection import NullImportanceSelector
+    >>> # estimator = GradientBoostingClassifier()
+    >>> # selector = NullImportanceSelector(estimator=estimator, threshold=0.5)
+    >>> # selector.fit(X, y)
+    """
+
     def __init__(self, estimator, target="target", threshold=1.0, norm_order=1, importance_getter='auto', cv=3, n_runs=5, **kwargs):
+        """按 Null Importance 分数筛选特征
+
+        :param estimator: sklearn 兼容的估算器（如 GradientBoostingClassifier, RandomForestClassifier 等）
+        :param target: 数据集中目标变量的列名，默认 "target"
+        :param threshold: 阈值，默认 1.0。> 1.0 时取分数最高的前 threshold 个特征，<= 1.0 时保留分数 > threshold 的特征
+        :param norm_order: 特征重要性归一化阶数，默认 1
+        :param importance_getter: 重要性获取方式，默认 'auto'
+        :param cv: 交叉验证折数，默认 3
+        :param n_runs: shuffle 次数，默认 5
+        :param kwargs: 其他参数
+        """
         super().__init__()
         self.estimator = estimator
         self.threshold = threshold
@@ -736,20 +1032,21 @@ class NullImportanceSelector(SelectorMixin):
         self.cv = cv
         self.n_runs = n_runs
         self.target = target
-    
+
     @staticmethod
     def _feature_score_v0(actual_importances, null_importances):
+        """计算方法 v0：实际重要性均值 / Null 重要性均值"""
         return actual_importances.mean(axis=1) / null_importances.mean(axis=1)
-    
+
     @staticmethod
     def _feature_score_v1(actual_importances, null_importances):
-        # 未进行特征shuffle的特征重要性除以shuffle以后的0.75分位数作为score
+        """计算方法 v1：实际重要性的 log 比值（相对于 Null 重要性的 75 分位数）"""
         actual_importance = actual_importances.mean()
         return np.log(1e-10 + actual_importance / (1. + np.percentile(null_importances, 75)))
-    
+
     @staticmethod
     def _feature_score_v2(actual_importances, null_importances):
-        # shuffle之后特征重要性低于实际target对应特征的重要性0.25分位数的次数百分比
+        """计算方法 v2（默认）：shuffle 后重要性低于真实重要性 25 分位数的比例"""
         return np.count_nonzero(null_importances < np.percentile(actual_importances, 25)) / null_importances.shape[0]
 
     def fit(self, x: pd.DataFrame, y=None):
@@ -758,13 +1055,13 @@ class NullImportanceSelector(SelectorMixin):
             x = x.drop(columns=self.target)
 
         cv = check_cv(self.cv, y, classifier=is_classifier(self.estimator))
-        
+
         n_splits = cv.get_n_splits()
         n_runs = self.n_runs
         getter = self.importance_getter
         norm_order = self.norm_order
-        
-        # 计算shuffle之后的特征重要性
+
+        # 计算 shuffle 之后的特征重要性
         estimator = deepcopy(self.estimator)
         n_samples, n_features = x.shape
         null_importances = np.zeros((n_features, n_splits * n_runs))
@@ -777,15 +1074,15 @@ class NullImportanceSelector(SelectorMixin):
                 estimator.fit(x.loc[train_idx], y_shuffled.loc[train_idx])
                 null_importance = _get_feature_importances(estimator, getter, transform_func=None, norm_order=norm_order)
                 null_importances[:, n_splits * run + fold_] = null_importance
-        
-        # 计算未shuffle的特征重要性
+
+        # 计算未 shuffle 的特征重要性
         estimator = clone(self.estimator)
         actual_importances = np.zeros((n_features, n_splits * n_runs))
         for run in range(n_runs):
             np.random.shuffle(idx)
             y_shuffled = y[idx]
             x_shuffled = x[idx]
-            
+
             for fold_, (train_idx, valid_idx) in enumerate(cv.split(y_shuffled, y_shuffled)):
                 estimator.fit(x_shuffled.loc[train_idx], y_shuffled.loc[train_idx])
                 actual_importance = _get_feature_importances(estimator, getter, transform_func=None, norm_order=norm_order)
@@ -793,14 +1090,14 @@ class NullImportanceSelector(SelectorMixin):
 
         self.null_importances = null_importances
         self.actual_importances_ = actual_importances
-        
+
         scores = np.zeros(n_features)
         for i in range(n_features):
             scores[i] = self._feature_score_v2(actual_importances[i, :], null_importances[i, :])
 
         self.scores_ = pd.Series(scores, index=x.columns)
         self.threshold = _calculate_threshold(self.estimator, scores, self.threshold)
-        
+
         if self.threshold > 1.0:
             self.select_columns = list(set(self.scores_.sort_values(ascending=False).iloc[:math.floor(self.threshold)].index.tolist() + [self.target]))
             self.dropped = pd.DataFrame([(col, f"nullimportance not top {self.threshold}") for col in x.columns if col not in self.select_columns], columns=["variable", "rm_reason"])
@@ -812,24 +1109,53 @@ class NullImportanceSelector(SelectorMixin):
 
 
 class TargetPermutationSelector(NullImportanceSelector):
-    
+    """基于目标变量排列（Target Permutation）筛选特征的 Selector
+
+    继承自 ``NullImportanceSelector``，使用相同的算法逻辑。
+    通过多次打乱目标变量，计算特征在随机标签下的重要性基准线，
+    识别哪些特征的真实重要性显著高于随机基准。
+
+    **参考样例**
+
+    >>> from sklearn.ensemble import RandomForestClassifier
+    >>> from scorecardpipeline.feature_selection import TargetPermutationSelector
+    >>> # estimator = RandomForestClassifier()
+    >>> # selector = TargetPermutationSelector(estimator=estimator, threshold=0.5)
+    >>> # selector.fit(X, y)
+    """
+
     def __init__(self, estimator, target="target", threshold=1.0, norm_order=1, importance_getter='auto', cv=3, n_runs=5, **kwargs):
+        """按目标变量排列重要性筛选特征
+
+        :param estimator: sklearn 兼容的估算器
+        :param target: 数据集中目标变量的列名，默认 "target"
+        :param threshold: 阈值，默认 1.0
+        :param norm_order: 特征重要性归一化阶数，默认 1
+        :param importance_getter: 重要性获取方式，默认 'auto'
+        :param cv: 交叉验证折数，默认 3
+        :param n_runs: 排列次数，默认 5
+        :param kwargs: 其他参数
+        """
         super().__init__(estimator, target=target, threshold=threshold, norm_order=norm_order, importance_getter=importance_getter, cv=cv, n_runs=n_runs, **kwargs)
 
 
 class ExhaustiveSelector(SelectorMixin, MetaEstimatorMixin):
-    """Exhaustive Feature Selection for Classification and Regression.
+    """穷举式特征组合选择器
+
+    在给定的 min_features 和 max_features 范围内，穷举所有可能的特征组合，
+    使用交叉验证评估每种组合的效果，返回最优特征子集。
+    适用于特征数量较少（< 20）的场景。
 
     **属性字段**
 
-    :param subset_info_: list of dicts. A list of dictionary with the following keys: 'support_mask', mask array of the selected features 'cv_scores', cross validate scores
-    :param support_mask_: array-like of booleans. Array of final chosen features
-    :param best_idx_: array-like, shape = [n_predictions]. Feature Indices of the selected feature subsets.
-    :param best_score_: float. Cross validation average score of the selected subset.
-    :param best_feature_indices_: array-like, shape = (n_features,), Feature indices of the selected feature subsets.
+    :param subset_info_: list[dict]，每步选择的子集信息，包含 'support_mask'（特征掩码）和 'cv_scores'（交叉验证分数）
+    :param support_mask_: np.ndarray，最终选择的特征掩码
+    :param best_idx_: int，最优特征子集的索引
+    :param best_score_: float，最优子集的交叉验证平均分数
+    :param best_feature_indices_: np.ndarray，最优特征子集对应的特征索引
 
     **参考样例**
-    
+
     >>> from sklearn.neighbors import KNeighborsClassifier
     >>> from sklearn.datasets import load_iris
     >>> from scorecardpipeline.feature_selection import ExhaustiveSelector
@@ -837,22 +1163,21 @@ class ExhaustiveSelector(SelectorMixin, MetaEstimatorMixin):
     >>> knn = KNeighborsClassifier(n_neighbors=3)
     >>> efs = ExhaustiveSelector(knn, min_features=1, max_features=4, cv=3)
     >>> efs.fit(X, y)
-    ExhaustiveFeatureSelector(estimator=KNeighborsClassifier(n_neighbors=3), max_features=4)
     >>> efs.best_score_
-    0.9733333333333333
     >>> efs.best_idx_
-    12
     """
+
     def __init__(self, estimator, min_features=1, max_features=1, scoring="accuracy", cv=3, verbose=0, n_jobs=None, pre_dispatch='2*n_jobs'):
-        """
-        :param estimator: scikit-learn classifier or regressor
-        :param min_features: int (default: 1). Minimum number of features to select
-        :param max_features: int (default: 1). Maximum number of features to select
-        :param verbose: bool (default: True). Prints progress as the number of epochs to stdout.
-        :param scoring: str, (default='_passthrough_scorer'). Scoring metric in faccuracy, f1, precision, recall, roc_auc) for classifiers, {'mean_absolute_error', 'mean_squared_error', 'median_absolute_error', 'r2'} for regressors, or a callable object or function with signature ``scorer(estimator, X, y)``.
-        :param cv: int (default: 5). Scikit-learn cross-validation generator or `int`, If estimator is a classifier (or y consists of integer class labels), stratified k-fold is performed, and regular k-fold cross-validation otherwise. No cross-validation if cv is None, False, or 0.
-        :param n_jobs: int (default: 1). The number of CPUs to use for evaluating different feature subsets in parallel. -1 means 'all CPUs'.
-        :param pre_dispatch: int, or string (default: '2*n_jobs'). Controls the number of jobs that get dispatched during parallel execution if `n_jobs > 1` or `n_jobs=-1`.
+        """穷举特征组合选择
+
+        :param estimator: sklearn 兼容的分类器或回归器
+        :param min_features: 最小选择的特征数量，默认 1
+        :param max_features: 最大选择的特征数量，默认 1
+        :param scoring: 评分指标，默认 "accuracy"。分类器还支持 "f1", "precision", "recall", "roc_auc"；回归器支持 "neg_mean_squared_error", "neg_mean_absolute_error", "r2"
+        :param cv: 交叉验证折数，默认 3。若为 None 则不使用交叉验证
+        :param verbose: 是否打印进度信息，默认 0
+        :param n_jobs: 并行计算的 CPU 核心数，默认 None（1 个核心），-1 表示使用所有核心
+        :param pre_dispatch: 任务分发策略，默认 '2*n_jobs'
         """
         super().__init__()
         self.estimator = estimator

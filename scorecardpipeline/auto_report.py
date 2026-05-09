@@ -17,10 +17,10 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .utils import *
 from .processing import *
-from .excel_writer import ExcelWriter, dataframe2excel
+from .excel_writer import ExcelWriter, dataframe2excel, get_column_letter
 
 
-def auto_data_testing_report(data: pd.DataFrame, features=None, target="target", overdue=None, dpd=None, date=None, data_summary_comment="", freq="M", excel_writer=None, sheet="分析报告", start_col=2, start_row=2, dropna=False, writer_params={}, bin_params={}, feature_map={}, corr=False, pictures=["bin", "ks", "hist"], suffix=""):
+def auto_data_testing_report(data: pd.DataFrame, features=None, target="target", overdue=None, dpd=None, date=None, amount=None, data_summary_comment="", freq="M", excel_writer=None, sheet="分析报告", start_col=2, start_row=2, dropna=False, writer_params={}, bin_params={}, feature_map={}, corr=False, pictures=["bin", "ks", "hist"], suffix=""):
     """自动数据测试报告，用于三方数据评估或自有评分效果评估
 
     :param suffix: 用于避免未保存excel时，同名图片被覆盖的图片后缀名称
@@ -78,10 +78,7 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
     init_setting()
 
     data = data.copy()
-
-    if not isinstance(features, (list, tuple)):
-        features = [features]
-
+    
     if overdue and not isinstance(overdue, list):
         overdue = [overdue]
 
@@ -91,6 +88,14 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
     if overdue:
         target = f"{overdue[0]} {dpd[0]}+"
         data[target] = (data[overdue[0]] > dpd[0]).astype(int)
+
+        if features is None:
+            features = list(set(data.columns) - set(overdue + [target] + [date]))
+    else:
+        features = list(set(data.columns) - set([target] + [date]))
+
+    if features is not None and not isinstance(features, (list, tuple)):
+        features = [features]
 
     if isinstance(excel_writer, ExcelWriter):
         writer = excel_writer
@@ -156,9 +161,15 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
         end_row, end_col = dataframe2excel(temp.corr(), writer, worksheet, color_cols=list(temp.columns), start_row=end_row, figures=[f"model_report/auto_report_corr_plot{suffix}.png"], title="数值类变量相关性", figsize=(min(60 * len(temp.columns), 1080), min(55 * len(temp.columns), 950)), index=True, custom_cols=list(temp.columns), custom_format="0.00")
         end_row += 2
 
-    end_row, end_col = writer.insert_value2sheet(worksheet, (end_row, start_col), value="数值类特征 OR 评分效果评估", style="header_middle", end_space=(end_row, start_col + max_columns_len - 1))
+    # 分析变量的统计分布情况
+    summary_start_rows = end_row + 5
+    end_row, end_col = dataframe2excel(feature_summary(data, features=features, y=target), writer, worksheet, start_row=end_row + 2, title="变量统计分布情况", percent_cols=['IV', 'KS', 'PSI', '缺失率', '众数占比', '零值率', '负值率', '重复率'])
+
+    # 特征 OR 评分效果评估
+    end_row, end_col = writer.insert_value2sheet(worksheet, (end_row + 2, start_col), value="特征 OR 评分效果评估", style="header_middle", end_space=(end_row + 2, start_col + max_columns_len - 1), hyperlink=f"#{worksheet.title}!B{summary_start_rows - 3}")
+
     features_iter = tqdm(features)
-    for col in features_iter:
+    for idx, col in enumerate(features_iter):
         features_iter.set_postfix(feature=feature_map.get(col, col))
         try:
             if overdue is None:
@@ -171,7 +182,16 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
             elif isinstance(dropna, (float, int, str)):
                 temp = temp[temp[col] != dropna].reset_index(drop=True)
 
-            score_table_train = feature_bin_stats(temp, col, overdue=overdue, dpd=dpd, desc=f"{feature_map.get(col, col)}", target=target, **bin_params)
+            _bin_params = dict(
+                margins=True,
+                method="mdlp",
+                max_n_bins=10,
+                min_bin_size=0.01,
+            )
+            _bin_params.update(bin_params)
+            score_table_train = feature_bin_stats(temp, col, overdue=overdue, dpd=dpd, desc=f"{feature_map.get(col, col)}", target=target, **_bin_params)
+
+            feature_pictures = []
             if pictures and len(pictures) > 0:
                 if "bin" in pictures:
                     if score_table_train.columns.nlevels > 1:
@@ -180,7 +200,8 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
                     else:
                         _ = score_table_train.copy()
 
-                    bin_plot(_, desc=f"{feature_map.get(col, col)}", figsize=(10, 5), anchor=0.935, save=f"model_report/feature_bins_plot_{col}{suffix}.png")
+                    bin_plot(_.drop(index="合计", errors="ignore"), desc=f"{feature_map.get(col, col)}", figsize=(10, 5), anchor=0.935, save=f"model_report/feature_bins_plot_{col}{suffix}.png")
+                    feature_pictures.append(f"model_report/feature_bins_plot_{col}{suffix}.png")
 
                 if temp[col].dtypes.name not in ['object', 'str', 'category']:
                     if "ks" in pictures:
@@ -188,32 +209,29 @@ def auto_data_testing_report(data: pd.DataFrame, features=None, target="target",
                         has_ks = len(_) > 0 and _[col].nunique() > 1 and _[target].nunique() > 1
                         if has_ks:
                             ks_plot(_[col], _[target], figsize=(10, 5), title=f"{feature_map.get(col, col)}", save=f"model_report/feature_ks_plot_{col}{suffix}.png")
+                            feature_pictures.append(f"model_report/feature_ks_plot_{col}{suffix}.png")
                     if "hist" in pictures:
                         _ = temp.dropna().reset_index(drop=True)
                         if len(_) > 0:
                             hist_plot(_[col], y_true=_[target], figsize=(10, 6), desc=f"{feature_map.get(col, col)} 好客户 VS 坏客户", bins=30, anchor=1.11, fontsize=14, labels={0: "好客户", 1: "坏客户"}, save=f"model_report/feature_hist_plot_{col}{suffix}.png")
+                            feature_pictures.append(f"model_report/feature_hist_plot_{col}{suffix}.png")
 
             if (len(temp) < len(data)) and (isinstance(dropna, bool) and dropna is True) or (isinstance(dropna, (float, int, str))):
-                end_row, end_col = writer.insert_value2sheet(worksheet, (end_row + 2, start_col), value=f"数据字段: {feature_map.get(col, col)} (缺失率: {round((1 - len(temp) / len(data)) * 100, 2)}%)", style="header", end_space=(end_row + 2, start_col + max_columns_len - 1))
+                field_title = f"数据字段: {feature_map.get(col, col)} (缺失率: {round((1 - len(temp) / len(data)) * 100, 2)}%)"
             else:
-                end_row, end_col = writer.insert_value2sheet(worksheet, (end_row + 2, start_col), value=f"数据字段: {feature_map.get(col, col)}", style="header", end_space=(end_row + 2, start_col + max_columns_len - 1))
+                field_title = f"数据字段: {feature_map.get(col, col)}"
 
-            if pictures and len(pictures) > 0:
-                ks_row = end_row + 1
-                if "bin" in pictures:
-                    end_row, end_col = writer.insert_pic2sheet(worksheet, f"model_report/feature_bins_plot_{col}{suffix}.png", (ks_row, start_col), figsize=(600, 350))
-                if temp[col].dtypes.name not in ['object', 'str', 'category'] and temp[col].isnull().sum() != len(temp):
-                    if "ks" in pictures and has_ks:
-                        end_row, end_col = writer.insert_pic2sheet(worksheet, f"model_report/feature_ks_plot_{col}{suffix}.png", (ks_row, end_col - 1), figsize=(600, 350))
-                    if "hist" in pictures:
-                        end_row, end_col = writer.insert_pic2sheet(worksheet, f"model_report/feature_hist_plot_{col}{suffix}.png", (ks_row, end_col - 1), figsize=(600, 350))
+            # 记录超链接位置
+            writer.insert_hyperlink2sheet(worksheet, insert_space=(end_row + 2, start_col), target_space=(summary_start_rows + idx, start_col))
+            writer.insert_hyperlink2sheet(worksheet, insert_space=(summary_start_rows + idx, start_col), target_space=(end_row + 2, start_col))
+
             if return_cols:
                 if score_table_train.columns.nlevels > 1 and not isinstance(merge_columns[0], tuple):
                     merge_columns = [("分箱详情", c) for c in merge_columns]
 
-                end_row, end_col = dataframe2excel(score_table_train[merge_columns + [c for c in score_table_train.columns if (isinstance(c, (tuple, list)) and c[-1] in return_cols) or (not isinstance(c, (tuple, list)) and c in return_cols) or (isinstance(return_cols[0], (tuple, list)) and isinstance(c, (tuple, list)) and c in return_cols)]], writer, worksheet, percent_cols=["样本占比", "好样本占比", "坏样本占比", "坏样本率", "LIFT值", "坏账改善", "累积LIFT值", "累积坏账改善"], condition_cols=["坏样本率", "LIFT值"], merge_column=["指标名称", "指标含义"], merge=True, fill=True, start_row=end_row)
+                end_row, end_col = dataframe2excel(score_table_train[merge_columns + [c for c in score_table_train.columns if (isinstance(c, (tuple, list)) and c[-1] in return_cols) or (not isinstance(c, (tuple, list)) and c in return_cols) or (isinstance(return_cols[0], (tuple, list)) and isinstance(c, (tuple, list)) and c in return_cols)]], writer, worksheet, condition_color="F76E6C", figures=feature_pictures, title=field_title, percent_cols=["样本占比", "好样本占比", "坏样本占比", "坏样本率", "LIFT值", "坏账改善", "累积LIFT值", "累积坏账改善"], condition_cols=["坏样本率", "LIFT值"], merge_column=["指标名称", "指标含义"], figsize=(600, 350), merge=True, fill=True, start_row=end_row + 2)
             else:
-                end_row, end_col = dataframe2excel(score_table_train, writer, worksheet, percent_cols=["样本占比", "好样本占比", "坏样本占比", "坏样本率", "LIFT值", "坏账改善", "累积LIFT值", "累积坏账改善"], condition_cols=["坏样本率", "LIFT值"], merge_column=["指标名称", "指标含义"], merge=True, fill=True, start_row=end_row)
+                end_row, end_col = dataframe2excel(score_table_train, writer, worksheet, percent_cols=["样本占比", "好样本占比", "坏样本占比", "坏样本率", "LIFT值", "坏账改善", "累积LIFT值", "累积坏账改善"], condition_cols=["坏样本率", "LIFT值"], merge_column=["指标名称", "指标含义"], merge=True, fill=True, start_row=end_row + 2, figsize=(600, 350), condition_color="F76E6C", figures=feature_pictures, title=field_title)
         except:
             print(f"数据字段 {col} 分析时发生异常，请排查数据中是否存在异常:\n{traceback.format_exc()}")
 

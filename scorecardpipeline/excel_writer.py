@@ -12,9 +12,11 @@ warnings.filterwarnings("ignore")
 import re
 import os
 import copy
+import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from typing import Optional, Union, List, Tuple, Dict, Any
 
 from openpyxl.cell.cell import Cell
 from openpyxl.drawing.image import Image
@@ -226,7 +228,7 @@ class ExcelWriter:
 
         cell.hyperlink = Hyperlink(ref=f"{start_col}{start_row}", location=hyperlink, display=f"{cell.value}")
 
-    def insert_value2sheet(self, worksheet, insert_space, value="", style="content", auto_width=False, end_space=None, align: dict=None, max_col_width=50):
+    def insert_value2sheet(self, worksheet, insert_space, value="", style="content", auto_width=False, end_space=None, align: dict=None, max_col_width=50, hyperlink=None):
         """
         向sheet中的某个单元格插入某种样式的内容
 
@@ -238,6 +240,7 @@ class ExcelWriter:
         :param auto_width: 是否开启自动调整列宽
         :param align: 文本排列方式, 参考: Alignment
         :param max_col_width: 单元格列最大宽度，默认 50
+        :param hyperlink: 超链接目标地址，支持 "#Sheet名!单元格" 或绝对 URL，传入后该单元格将成为可跳转的超链接。默认 None。
 
         :return: 返回插入元素最后一列之后、最后一行之后的位置
         """
@@ -268,6 +271,9 @@ class ExcelWriter:
 
         worksheet[f"{start_col}{start_row}"] = value
 
+        if hyperlink:
+            cell.hyperlink = Hyperlink(ref=f"{start_col}{start_row}", location=hyperlink)
+
         if auto_width:
             # original_styles = [worksheet[f"{start_col}{i}"].fill.copy() for i in range(1, worksheet.max_row + 1)]
             curr_width = worksheet.column_dimensions[start_col].width
@@ -282,28 +288,35 @@ class ExcelWriter:
         else:
             return start_row + 1, column_index_from_string(start_col) + 1
 
-    def insert_pic2sheet(self, worksheet, fig, insert_space, figsize=(600, 250)):
-        """
-        向excel中插入图片内容
+    def insert_pic2sheet(self, worksheet: Worksheet, fig: str, insert_space: Union[str, Tuple[int, int]], figsize: Tuple[int, int] = (600, 250),) -> Tuple[int, int]:
+        """向Excel插入图片。
 
-        :param worksheet: 需要插入内容的sheet
-        :param fig: 需要插入的图片路径
-        :param insert_space: 插入图片的起始单元格
-        :param figsize: 图片大小设置
-        :return: 返回插入元素最后一列之后、最后一行之后的位置
+        :param worksheet: 工作表对象
+        :param fig: 图片路径
+        :param insert_space: 插入位置，如'B2'或(2, 2)
+        :param figsize: 图片大小(宽, 高)，默认为(600, 250)
+        :return: (下一行行号, 下一列列号)
         """
+        # 解析位置
         if isinstance(insert_space, str):
-            start_row = int(re.findall("\d+", insert_space)[0])
-            start_col = re.findall('\D+', insert_space)[0]
+            start_row = int(re.findall(r"\d+", insert_space)[0])
+            start_col = re.findall(r'\D+', insert_space)[0]
         else:
             start_row, start_col = insert_space
             start_col = get_column_letter(start_col)
 
+        # 插入图片
         image = Image(fig)
         image.width, image.height = figsize
         worksheet.add_image(image, f"{start_col}{start_row}")
 
-        return start_row + int(figsize[1] / (16.0 if self.system != 'mac' else 17.5)), column_index_from_string(start_col) + 6
+        # 计算占用的行数和列数
+        row_height = 16.0 if self.system != 'mac' else 17.5
+        col_width = 64.0 * (10 / 7)
+        occupied_rows = max(1, math.ceil(figsize[1] / row_height))
+        occupied_cols = max(1, math.ceil(figsize[0] / col_width))
+
+        return start_row + occupied_rows, column_index_from_string(start_col) + occupied_cols
 
     def insert_rows(self, worksheet, row, row_index, col_index, merge_rows=None, style="", auto_width=False, style_only=False, multi_levels=False):
         """
@@ -821,7 +834,7 @@ class ExcelWriter:
             self.workbook.close()
 
 
-def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True, theme_color="2639E9", condition_color=None, fill=True, percent_cols=None, condition_cols=None, custom_cols=None, custom_format="#,##0", color_cols=None, percent_rows=None, condition_rows=None, custom_rows=None, color_rows=None, left_cols=None, right_cols=None, start_col=2, start_row=2, mode="replace", figures=None, figsize=(600, 350), image_bottom_padding_rows=1, writer_params={}, auto_filter=False, **kwargs):
+def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True, theme_color="2639E9", condition_color="F76E6C", fill=True, percent_cols=None, condition_cols=None, custom_cols=None, custom_format="#,##0", color_cols=None, percent_rows=None, condition_rows=None, custom_rows=None, color_rows=None, left_cols=None, right_cols=None, start_col=2, start_row=2, mode="replace", figures=None, figsize=(600, 350), image_bottom_padding_rows=1, writer_params={}, auto_filter=False, hyperlink_anchor=None, **kwargs):
     """
     向excel文件中插入指定样式的dataframe数据
 
@@ -832,8 +845,8 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
     :param figures: 需要数据表与标题之间插入的图片，支持一次性传入多张图片的路径，会根据传入顺序依次插入
     :param figsize: 插入图像的大小，为了统一排版，目前仅支持设置一个图片大小，默认: (600, 350) (长度, 高度)
     :param header: 是否存储dataframe的header，暂不支持多级表头
-    :param theme_color: 主题色
-    :param condition_color: 条件格式主题颜色，不传默认为 theme_color
+    :param theme_color: 主题色，默认 2639E9
+    :param condition_color: 条件格式主题颜色，默认 F76E6C
     :param fill: 是否使用单元个颜色填充样式还是使用边框样式
     :param percent_cols: 需要显示为百分数的列，仅修改显示格式，不更改数值
     :param condition_cols: 需要显示条件格式的列（无边框渐变数据条）
@@ -850,9 +863,10 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
     :param image_bottom_padding_rows: 图片区与下方表格之间的额外空行数，默认为1
     :param writer_params: 透传至 ExcelWriter 内的参数
     :param auto_filter: 是否添加自动筛选功能，默认为False
+    :param hyperlink_anchor: 是否将该标题单元格设置为超链接锚点（用于其他单元格跳转至此），传入 True 则该标题单元格成为超链接目标，可被其他单元格通过 `#当前sheet!{col}{row}` 跳转。默认 None 不设置。
     :param **kwargs: 其他参数，透传至 insert_df2sheet 方法，例如 传入 auto_width=True 会根据内容自动调整列宽
 
-    :return: 返回插入元素最后一列之后、最后一行之后的位置
+    :return: 返回 (end_row, end_col) 或 (end_row, end_col, title_row)，其中 title_row 仅在设置了 hyperlink_anchor 时返回
 
     **参考样例**
 
@@ -908,8 +922,22 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
 
     if title:
         col_width = len(data.columns) + data.index.nlevels if kwargs.get("index", False) else len(data.columns)
-        start_row, end_col = writer.insert_value2sheet(worksheet, (start_row, start_col), value=title, style="header", end_space=(start_row, start_col + col_width - 1))
+        # 如果有 figures，先估算 end_col（figures 每个约 6 列宽）
+        if figures:
+            figures = [pic for pic in figures if pic] if isinstance(figures, (list, tuple)) else ([figures] if figures else [])
+            fig_cols = len(figures) * 6
+        else:
+            fig_cols = 0
+        title_end_col = max(start_col + col_width - 1, start_col + fig_cols - 1)
+        start_row, end_col = writer.insert_value2sheet(worksheet, (start_row, start_col), value=title, style="header", end_space=(start_row, title_end_col))
+        # hyperlink_anchor: 标记该标题单元格为超链接锚点，可被其他单元格跳转
+        if hyperlink_anchor:
+            anchor_cell = worksheet[f"{get_column_letter(start_col)}{start_row}"]
+            anchor_cell.hyperlink = Hyperlink(ref=f"{get_column_letter(start_col)}{start_row}", location=f"{get_column_letter(start_col)}{start_row}")
+        title_row = start_row
         start_row += 1
+    else:
+        title_row = None
 
     if figures is not None:
         if isinstance(figures, str):
@@ -919,13 +947,16 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
 
         if figures:
             pic_row = start_row
-            for i, pic in enumerate(figures):
-                if i == 0:
-                    start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, start_col), figsize=figsize)
-                else:
-                    start_row, end_col = writer.insert_pic2sheet(worksheet, pic, (pic_row, end_col - 1), figsize=figsize)
-
-            start_row += image_bottom_padding_rows
+            current_col = start_col
+            max_img_end_row = pic_row
+            row_height = 16.0 if writer.system != 'mac' else 17.5
+            col_width = 64.0 * (10 / 7)
+            occupied_cols = max(1, math.ceil(figsize[0] / col_width))
+            for pic in figures:
+                img_end_row, _ = writer.insert_pic2sheet(worksheet, pic, (pic_row, current_col), figsize=figsize)
+                current_col += occupied_cols
+                max_img_end_row = max(max_img_end_row, img_end_row)
+            start_row = max_img_end_row + (0 if image_bottom_padding_rows is None else max(int(image_bottom_padding_rows), 0))
 
     if "merge_column" in kwargs and kwargs["merge_column"]:
         if not isinstance(kwargs["merge_column"][0], (tuple, list)):
@@ -1060,6 +1091,8 @@ def dataframe2excel(data, excel_writer, sheet_name=None, title=None, header=True
     if not isinstance(excel_writer, ExcelWriter) and not isinstance(sheet_name, Worksheet):
         writer.save(excel_writer)
 
+    if hyperlink_anchor:
+        return end_row, end_col, title_row
     return end_row, end_col
 
 
