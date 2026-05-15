@@ -1824,7 +1824,7 @@ def feature_summary(
         if non_null > 0:
             unique_count = series.nunique()
             result['重复数'] = non_null - unique_count
-            result['重复率'] = result['重复数']
+            result['重复率'] = result['重复数'] / total
         else:
             result['重复数'] = 0
             result['重复率'] = 0
