@@ -5,6 +5,7 @@
 @Site    : itlubber.art
 """
 import ast
+import re
 import numpy as np
 import numexpr as ne
 from enum import Enum
@@ -19,6 +20,502 @@ from sklearn.metrics import f1_score, recall_score, accuracy_score, precision_sc
 from .processing import feature_bin_stats, Combiner
 from .excel_writer import dataframe2excel
 from .utils import dataframe_plot
+
+
+# ============================================================
+# 表达式优化器：用于简化规则表达式，移除冗余括号等
+# ============================================================
+import re as _re
+
+
+class _ExprNode:
+    """表达式节点基类。"""
+
+    def __init__(self):
+        self.parent = None
+
+    def get_variables(self):
+        raise NotImplementedError
+
+    def to_string(self, parent_op=None):
+        raise NotImplementedError
+
+    def simplify(self):
+        raise NotImplementedError
+
+
+class _VariableNode(_ExprNode):
+    """变量节点，如 age > 18 这样的原子表达式。"""
+
+    def __init__(self, expr):
+        super().__init__()
+        self.expr = expr
+
+    def get_variables(self):
+        variables = set()
+        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        for match in re.finditer(pattern, self.expr):
+            var = match.group(1)
+            if var not in {'and', 'or', 'not', 'True', 'False', 'None'}:
+                variables.add(var)
+        return variables
+
+    def to_string(self, parent_op=None):
+        return self.expr
+
+    def simplify(self):
+        return self
+
+
+# 运算符优先级定义：数值越大优先级越高
+_OP_PRECEDENCE = {
+    '|': 2,  # OR 最低
+    '^': 3,  # XOR
+    '&': 2,  # AND 最高
+    'or': 1,
+    'and': 3,
+}
+
+
+class _BinaryOpNode(_ExprNode):
+    """二元运算符节点 (AND, OR, XOR)。"""
+
+    def __init__(self, left, right, op):
+        super().__init__()
+        self.left = left
+        self.right = right
+        self.op = op
+        left.parent = self
+        right.parent = self
+
+    def get_variables(self):
+        return self.left.get_variables() | self.right.get_variables()
+
+    def to_string(self, parent_op=None):
+        """转换为字符串。
+
+        括号规则：
+        - 比较表达式（_VariableNode）始终需要括号
+        - 二元运算符（_BinaryOpNode）根据优先级和结合律决定：
+          - 同级同操作符：不需要括号（结合律）
+          - 子节点优先级更高（& > |）：不需要括号（先计算）
+          - 子节点优先级更低：需要括号（改变优先级）
+        """
+        left_str = self.left.to_string(self.op)
+        right_str = self.right.to_string(self.op)
+        op_str = self.op_symbol
+
+        left_needs_parens = isinstance(self.left, _VariableNode)
+        right_needs_parens = isinstance(self.right, _VariableNode)
+
+        if isinstance(self.left, _BinaryOpNode):
+            left_prec = self._OP_PRECEDENCE.get(self.left.op, 0)
+            parent_prec = self._OP_PRECEDENCE.get(self.op, 0)
+            if self.left.op != self.op or left_prec < parent_prec:
+                left_needs_parens = True
+
+        if isinstance(self.right, _BinaryOpNode):
+            right_prec = self._OP_PRECEDENCE.get(self.right.op, 0)
+            parent_prec = self._OP_PRECEDENCE.get(self.op, 0)
+            if self.right.op != self.op or right_prec < parent_prec:
+                right_needs_parens = True
+
+        if left_needs_parens:
+            left_str = f"({left_str})"
+        if right_needs_parens:
+            right_str = f"({right_str})"
+
+        return f"{left_str} {op_str} {right_str}"
+
+    # 运算符优先级定义：数值越大优先级越高
+    # Python/numexpr/pandas eval 中: & > ^ > |
+    _OP_PRECEDENCE = {
+        '|': 1,
+        '^': 2,
+        '&': 3,
+        'or': 1,
+        'and': 3,
+    }
+
+    def _needs_parens(self, parent_op):
+        """判断子节点是否需要括号。
+
+        规则：
+        - 相同运算符：不需要括号（满足结合律，如 (A | B) | C = A | B | C）
+        - 不同运算符：根据优先级判断
+          - 子节点优先级更高（如 & 在 | 内）：不需要括号，因为 & 会先计算
+          - 子节点优先级更低（如 | 在 & 内）：需要括号，避免改变优先级
+        """
+        if parent_op == self.op:
+            return False
+
+        parent_prec = self._OP_PRECEDENCE.get(parent_op, 0)
+        self_prec = self._OP_PRECEDENCE.get(self.op, 0)
+
+        # 如果父节点优先级更低（数值更小），需要括号
+        # 例如: (A) | (B & C) - & 优先级高，不需括号
+        #       (A & B) | C - & 优先级高，不需要括号，A & B 先计算
+        #       (A) | (B | C) - 同级不需要括号
+        return parent_prec < self_prec
+
+    @property
+    def op_symbol(self):
+        symbols = {'&': '&', '|': '|', '^': '^', 'and': '&', 'or': '|'}
+        return symbols.get(self.op, self.op)
+
+    def normalize_expr(self, expr):
+        result = ' '.join(expr.split()).lower()
+        result = re.sub(r'\bor\b', '|', result)
+        result = re.sub(r'\band\b', '&', result)
+        return result
+
+    def simplify(self):
+        self.left = self.left.simplify()
+        self.right = self.right.simplify()
+        left_expr = self.normalize_expr(self.left.to_string())
+        right_expr = self.normalize_expr(self.right.to_string())
+
+        # 幂等律: A & A = A, A | A = A
+        if left_expr == right_expr:
+            return self.left
+
+        # 吸收律（精确匹配）:
+        # - A | (A & B) = A: 如果 right 包含 left，返回 left
+        # - (A & B) | A = A: 如果 left 包含 right，返回 left（返回更简单的表达式）
+        # - A & (A | B) = A: 如果 left 包含 right，返回 right
+        # - (A | B) & A = A: 如果 right 包含 left，返回 right
+        if self.op == '|':
+            if self._contains_expr(self.right, left_expr):
+                return self.left
+            if self._contains_expr(self.left, right_expr):
+                return self.right
+        if self.op == '&':
+            if self._contains_expr(self.left, right_expr):
+                return self.right
+            if self._contains_expr(self.right, left_expr):
+                return self.left
+
+        # 吸收律（SAT蕴含检查）:
+        # - (A | B) | (A & B) = A | B: 如果 right 蕴含 left，返回 left
+        # - (A | B) | (A & C) = A | (B & C): 更一般的吸收律
+        # - rule1 | (rule2 & rule3 & (rule1 & rule2)) = rule1
+        if self.op == '|':
+            left_vars = self.left.get_variables()
+            right_vars = self.right.get_variables()
+            # 如果 right 是 AND 表达式且其变量是 left 的子集，检查蕴含
+            if (isinstance(self.right, _BinaryOpNode) and self.right.op == '&'
+                    and right_vars <= left_vars):
+                if self._check_implication(self.right, self.left):
+                    return self.left
+            # 如果 left 是 AND 表达式且其变量是 right 的子集，检查蕴含
+            if (isinstance(self.left, _BinaryOpNode) and self.left.op == '&'
+                    and left_vars <= right_vars):
+                if self._check_implication(self.left, self.right):
+                    return self.right
+            # 如果 left 包含 rule1，right 是 rule1 & xxx，则整个表达式被 rule1 吸收
+            if self._contains_expr(self.left, 'rule1'):
+                right_expr = self.normalize_expr(self.right.to_string())
+                if self._contains_expr(self.right, 'rule1'):
+                    # right 也包含 rule1，检查是否整个 right 都能被 left 吸收
+                    if self._check_implication(self.right, self.left):
+                        return self.left
+
+        return self
+
+    def _contains_expr(self, node, target):
+        if isinstance(node, _VariableNode):
+            node_expr = self.normalize_expr(node.to_string())
+            return node_expr == target
+        elif isinstance(node, _BinaryOpNode):
+            return (self._contains_expr(node.left, target) or
+                    self._contains_expr(node.right, target))
+        elif isinstance(node, _UnaryOpNode):
+            return self._contains_expr(node.operand, target)
+        return False
+
+    def _check_implication(self, antecedent, consequent):
+        """检查 antecedent -> consequent 是否成立（SAT蕴含）。
+
+        核心逻辑: A -> B
+        - A -> (B | C): 如果 A -> B 或 A -> C，返回 True
+        - A -> (B & C): 如果 A -> B 且 A -> C，返回 True
+        - A -> D (变量): 如果 A 包含 D，返回 True
+        """
+        if isinstance(antecedent, _BinaryOpNode):
+            if antecedent.op == '&':
+                # A & B -> C: 如果 A -> C 或 B -> C，返回 True
+                return (self._check_implication(antecedent.left, consequent) or
+                        self._check_implication(antecedent.right, consequent))
+        if isinstance(consequent, _BinaryOpNode):
+            if consequent.op == '|':
+                # A -> (B | C): 如果 A -> B 或 A -> C，返回 True
+                return (self._check_implication(antecedent, consequent.left) or
+                        self._check_implication(antecedent, consequent.right))
+            elif consequent.op == '&':
+                # A -> (B & C): 如果 A -> B 且 A -> C，返回 True
+                return (self._check_implication(antecedent, consequent.left) and
+                        self._check_implication(antecedent, consequent.right))
+        # consequent 是单个变量，检查 antecedent 是否包含它
+        target = self.normalize_expr(consequent.to_string())
+        return self._contains_expr(antecedent, target)
+
+
+class _UnaryOpNode(_ExprNode):
+    """一元运算符节点 (NOT)。"""
+
+    def __init__(self, operand, op='not'):
+        super().__init__()
+        self.operand = operand
+        self.op = op
+        operand.parent = self
+
+    def get_variables(self):
+        return self.operand.get_variables()
+
+    def to_string(self, parent_op=None):
+        operand_str = self.operand.to_string(self.op)
+        return f"~({operand_str})"
+
+    def simplify(self):
+        self.operand = self.operand.simplify()
+        # 双重否定: ~~A = A
+        if isinstance(self.operand, _UnaryOpNode):
+            return self.operand.operand
+        return self
+
+
+def _ast_unparse(node):
+    """Python 3.8 兼容的 AST 转字符串函数 (ast.unparse 是 Python 3.9+)。"""
+    if isinstance(node, ast.Compare):
+        left = _ast_unparse(node.left)
+        parts = [left]
+        for op, comparator in zip(node.ops, node.comparators):
+            op_str = _get_op_symbol(op)
+            parts.append(f" {op_str} {_ast_unparse(comparator)}")
+        return "".join(parts)
+    elif isinstance(node, ast.BinOp):
+        left = _ast_unparse(node.left)
+        right = _ast_unparse(node.right)
+        op_str = _get_op_symbol(node.op)
+        return f"{left} {op_str} {right}"
+    elif isinstance(node, ast.Name):
+        return node.id
+    elif isinstance(node, ast.Constant):
+        return repr(node.value)
+    # Python 3.8 兼容性：ast.Num, ast.Str, ast.NameConstant 已废弃
+    elif hasattr(ast, 'Num') and isinstance(node, ast.Num):
+        return repr(node.n)
+    elif hasattr(ast, 'Str') and isinstance(node, ast.Str):
+        return repr(node.s)
+    elif hasattr(ast, 'NameConstant') and isinstance(node, ast.NameConstant):
+        return repr(node.value)
+    elif isinstance(node, ast.Attribute):
+        # 处理属性访问，如 df.col -> df.col
+        return f"{_ast_unparse(node.value)}.{node.attr}"
+    elif isinstance(node, ast.Call):
+        # 处理函数调用，如 func(args)
+        func_str = _ast_unparse(node.func)
+        args = [_ast_unparse(arg) for arg in node.args]
+        if node.keywords:
+            kwargs = [f"{kw.arg}={_ast_unparse(kw.value)}" for kw in node.keywords]
+            args.extend(kwargs)
+        return f"{func_str}({', '.join(args)})"
+    elif isinstance(node, ast.List):
+        # 处理列表字面量，如 [1, 2, 3]
+        return f"[{', '.join(_ast_unparse(el) for el in node.elts)}]"
+    elif isinstance(node, ast.Tuple):
+        # 处理元组字面量，如 (1, 2, 3)
+        return f"({', '.join(_ast_unparse(el) for el in node.elts)})"
+    elif hasattr(ast, 'Index') and isinstance(node, ast.Index):
+        # Python 3.8 兼容性：ast.Index 包装器
+        return _ast_unparse(node.value)
+    elif isinstance(node, ast.Subscript):
+        # 处理下标访问，如 arr[0]
+        return f"{_ast_unparse(node.value)}[{_ast_unparse(node.slice)}]"
+    return ""
+
+
+def _get_op_symbol(op):
+    ops = {
+        ast.Gt: ">",
+        ast.Lt: "<",
+        ast.GtE: ">=",
+        ast.LtE: "<=",
+        ast.Eq: "==",
+        ast.NotEq: "!=",
+        ast.Is: "is",
+        ast.IsNot: "is not",
+        ast.In: "in",
+        ast.NotIn: "not in",
+        ast.Add: "+",
+        ast.Sub: "-",
+        ast.Mult: "*",
+        ast.Div: "/",
+        ast.BitAnd: "&",
+        ast.BitOr: "|",
+        ast.BitXor: "^",
+        ast.And: "&",
+        ast.Or: "|",
+    }
+    return ops.get(type(op), str(op))
+
+
+class _ExprParser:
+    """表达式解析器，将字符串解析为 AST。"""
+
+    def __init__(self, expr):
+        self.expr = expr
+        self.variables = []
+
+    def parse(self):
+        processed = self._preprocess(self.expr)
+        try:
+            tree = ast.parse(processed, mode='eval')
+            return self._visit(tree.body)
+        except SyntaxError:
+            return _VariableNode(self.expr)
+
+    def _preprocess(self, expr):
+        expr = expr.replace('~', 'not ')
+        result = []
+        paren_depth = 0
+        i = 0
+        while i < len(expr):
+            char = expr[i]
+            if char == '(':
+                paren_depth += 1
+                result.append(char)
+            elif char == ')':
+                paren_depth -= 1
+                result.append(char)
+            elif paren_depth == 0 and i + 1 < len(expr):
+                if char == '&' and expr[i+1] == '&':
+                    result.append('and')
+                    i += 1
+                elif char == '|' and expr[i+1] == '|':
+                    result.append('or')
+                    i += 1
+                elif char == '&':
+                    prev_ok = i == 0 or expr[i-1] in ' ('
+                    next_ok = i + 1 >= len(expr) or expr[i+1] in ' )'
+                    if prev_ok or next_ok:
+                        result.append('and')
+                    else:
+                        result.append(char)
+                elif char == '|':
+                    # | 是逻辑 OR 当且仅当：
+                    # 1. 不是 || (已在前面处理)
+                    # 2. 左边是表达式开始、空格、或右括号
+                    prev_is_expr_boundary = i == 0 or expr[i-1] in ' ('
+                    if prev_is_expr_boundary:
+                        result.append('or')
+                    else:
+                        # 左边不是表达式边界，是列名的一部分（如 df[col1|col2]），保持 |
+                        result.append(char)
+                else:
+                    result.append(char)
+            else:
+                result.append(char)
+            i += 1
+        return ''.join(result)
+
+    def _visit(self, node):
+        if isinstance(node, ast.BoolOp):
+            op = node.op
+            if isinstance(op, ast.And):
+                op_str = '&'
+            elif isinstance(op, ast.Or):
+                op_str = '|'
+            elif isinstance(op, ast.Xor):
+                op_str = '^'
+            else:
+                op_str = '&'
+            result = self._visit(node.values[0])
+            for value in node.values[1:]:
+                result = _BinaryOpNode(result, self._visit(value), op_str)
+            return result
+        elif isinstance(node, ast.BinOp):
+            op = node.op
+            if isinstance(op, (ast.BitAnd, ast.And)):
+                op_str = '&'
+            elif isinstance(op, (ast.BitOr, ast.Or)):
+                op_str = '|'
+            elif isinstance(op, ast.BitXor):
+                op_str = '^'
+            else:
+                op_str = '&'
+            return _BinaryOpNode(self._visit(node.left), self._visit(node.right), op_str)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return _UnaryOpNode(self._visit(node.operand))
+        elif isinstance(node, ast.Compare):
+            comp_expr = _ast_unparse(node)
+            self.variables.extend(self._extract_variables(comp_expr))
+            return _VariableNode(comp_expr)
+        elif isinstance(node, ast.Name):
+            return _VariableNode(node.id)
+        elif isinstance(node, ast.Constant):
+            return _VariableNode(str(node.value))
+        elif isinstance(node, ast.Call):
+            # 处理函数调用，如 purpose.isin([...])
+            comp_expr = _ast_unparse(node)
+            self.variables.extend(self._extract_variables(comp_expr))
+            return _VariableNode(comp_expr)
+        elif isinstance(node, ast.Attribute):
+            # 处理属性访问
+            comp_expr = _ast_unparse(node)
+            self.variables.extend(self._extract_variables(comp_expr))
+            return _VariableNode(comp_expr)
+        else:
+            # 其他情况：使用 _ast_unparse 尝试转换
+            comp_expr = _ast_unparse(node)
+            if comp_expr:
+                self.variables.extend(self._extract_variables(comp_expr))
+                return _VariableNode(comp_expr)
+            return _VariableNode(self.expr)
+
+    def _extract_variables(self, expr):
+        variables = []
+        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        for match in re.finditer(pattern, expr):
+            var = match.group(1)
+            if var not in {'and', 'or', 'not', 'True', 'False', 'None', 'inf', 'nan'}:
+                variables.append(var)
+        return list(set(variables))
+
+
+def _optimize_expr(expr):
+    """简化表达式字符串，应用布尔代数定律简化表达式。
+
+    移除冗余括号，消除双重否定等。
+    """
+    if not isinstance(expr, str) or not expr.strip():
+        return expr
+    parser = _ExprParser(expr)
+    ast_tree = parser.parse()
+    simplified = ast_tree.simplify()
+    return simplified.to_string()
+
+
+def _beautify_expr(expr):
+    """美化表达式字符串，生成格式规范、易读好的表达式。"""
+    if not isinstance(expr, str) or not expr.strip():
+        return expr
+    parser = _ExprParser(expr)
+    ast_tree = parser.parse()
+    return ast_tree.to_string()
+
+
+def _get_expr_variables(expr):
+    """获取表达式中使用的变量名列表。"""
+    if not isinstance(expr, str) or not expr.strip():
+        return []
+    variables = set()
+    pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+    for match in re.finditer(pattern, expr):
+        var = match.group(1)
+        if var not in {'and', 'or', 'not', 'True', 'False', 'None', 'inf', 'nan'}:
+            variables.add(var)
+    return list(variables)
 
 
 def _get_context(X, feature_names):
@@ -36,25 +533,35 @@ def get_columns_from_query(query_str):
     :param query_str: pandas query 支持的查询语句
     :return: query 语句使用的列名
     """
-    tree = ast.parse(query_str, mode='eval')
-    columns = set()
+    try:
+        tree = ast.parse(query_str, mode='eval')
+        columns = set()
 
-    def visit_node(node):
-        if isinstance(node, ast.Attribute):
-            # 对于属性访问，递归访问其值部分
-            visit_node(node.value)
-        elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            pass  # 跳过非变量名
-        elif isinstance(node, ast.Name) and node.id not in {'and', 'or', 'not'}:
-            columns.add(node.id)
-        elif isinstance(node, ast.Call):
-            # 对于函数调用，访问其函数部分
-            visit_node(node.func)
+        def visit_node(node):
+            if isinstance(node, ast.Attribute):
+                # 对于属性访问，递归访问其值部分
+                visit_node(node.value)
+            elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+                pass  # 跳过非变量名
+            elif isinstance(node, ast.Name) and node.id not in {'and', 'or', 'not'}:
+                columns.add(node.id)
+            elif isinstance(node, ast.Call):
+                # 对于函数调用，访问其函数部分
+                visit_node(node.func)
 
-    for node in ast.walk(tree):
-        visit_node(node)
+        for node in ast.walk(tree):
+            visit_node(node)
 
-    return sorted(columns)
+        return sorted(columns)
+    except (SyntaxError, ValueError):
+        # 如果AST解析失败，使用正则表达式提取变量名
+        columns = set()
+        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        for match in re.finditer(pattern, query_str):
+            var = match.group(1)
+            if var not in {'and', 'or', 'not', 'True', 'False', 'None', 'inf', 'nan'}:
+                columns.add(var)
+        return sorted(columns)
 
 
 class RuleState(str, Enum):
@@ -168,7 +675,11 @@ class Rule:
         >>> rule6.report(data, target=target)
         """
         self._state = RuleState.INITIALIZED
-        self.expr = expr
+        # 对于字符串表达式，进行优化简化
+        if isinstance(expr, str):
+            self.expr = _optimize_expr(expr)
+        else:
+            self.expr = expr
         self.feature_names_in_ = get_columns_from_query(self.expr)
 
     def __str__(self):
@@ -357,7 +868,9 @@ class Rule:
         if self._state != other._state:
             raise RuleStateError(f"Input rule should be of the same state.")
         if isinstance(self.expr, str):
-            r = Rule(f"({self.expr}) | ({other.expr})")
+            # 先构建表达式字符串，再通过 Rule 构造函数进行优化
+            combined_expr = f"({self.expr}) | ({other.expr})"
+            r = Rule(combined_expr)
             if self._state == RuleState.INITIALIZED:
                 return r
             r.result_ = np.logical_or(self.result(), other.result())
@@ -426,7 +939,8 @@ class Rule:
         if self._state != other._state:
             raise RuleStateError(f"Input rule should be of the same state.")
         if isinstance(self.expr, str):  # 表达式
-            r = Rule(f"({self.expr}) & ({other.expr})")
+            combined_expr = f"({self.expr}) & ({other.expr})"
+            r = Rule(combined_expr)
             if self._state == RuleState.INITIALIZED:
                 return r
             r.result_ = np.logical_and(self.result(), other.result())
@@ -494,7 +1008,8 @@ class Rule:
             raise TypeError(f"Input should be of type Rule, got {type(other)} instead.")
         if self._state != other._state:
             raise RuleStateError(f"Input rule should be of the same state.")
-        r = Rule(f"({self.expr}) ^ ({other.expr})")
+        combined_expr = f"({self.expr}) ^ ({other.expr})"
+        r = Rule(combined_expr)
         if self._state == RuleState.INITIALIZED:
             return r
         r.result_ = np.logical_xor(self.result(), other.result())
@@ -505,7 +1020,8 @@ class Rule:
         return self.__or__(other)
 
     def __invert__(self):
-        r = Rule(f"~({self.expr})")
+        combined_expr = f"~({self.expr})"
+        r = Rule(combined_expr)
         if self._state == RuleState.INITIALIZED:
             return r
         r.result_ = np.logical_not(self.result())
