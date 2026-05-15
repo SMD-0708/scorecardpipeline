@@ -18,6 +18,80 @@ import joblib
 import warnings
 import numpy as np
 import pandas as pd
+
+
+# ==================== 日期频率兼容性辅助函数 ====================
+def _normalize_freq(freq: str) -> str:
+    """将旧的 pandas 频率别名转换为新版本支持的格式。
+
+    适用于 resample() / to_period() / to_offset() 等需要频率参数的场景。
+    同时兼容旧版 pandas（如 2.x）和新版 pandas（3.x+）。
+
+    :param freq: 频率别名字符串，支持带数字前缀的格式（如 '3M', '5H', '2D'）
+    :return: 标准化后的频率别名
+
+    >>> _normalize_freq("M")    # pandas < 3.0 的月份别名
+    'ME'
+    >>> _normalize_freq("ME")   # 新版保持不变
+    'ME'
+    >>> _normalize_freq("H")    # pandas < 3.0 的小时别名
+    'h'
+    >>> _normalize_freq("h")   # 新版保持不变
+    'h'
+    >>> _normalize_freq("3M")   # 每 3 个月
+    '3ME'
+    >>> _normalize_freq("5H")   # 每 5 小时
+    '5h'
+    >>> _normalize_freq("2D")   # 每 2 天（无变化）
+    '2D'
+    >>> _normalize_freq("Q")    # 季度别名（Q 在新版仍可用）
+    'Q'
+    >>> _normalize_freq("D")    # 日别名（无变化）
+    'D'
+    """
+    import re
+    _freq = str(freq).strip()
+    # 月: M -> ME（pandas 3.x+ 不再支持 M）
+    # 处理带数字前缀的格式，如 '3M' -> '3ME'
+    if re.match(r'^\d*M$', _freq):
+        return _freq[:-1] + 'ME'
+    if _freq == 'M':
+        return 'ME'
+    # 小时: H -> h（pandas 3.x+ 不再支持 H）
+    if re.match(r'^\d*H$', _freq):
+        return _freq[:-1] + 'h'
+    if _freq == 'H':
+        return 'h'
+    return _freq
+
+
+def _normalize_freq_for_period(freq: str) -> str:
+    """将旧的频率别名转换为 to_period() 支持的格式。
+
+    与 _normalize_freq 的区别：
+    - to_period() 不接受 'h'，只接受 'H'（新版 pandas 也仍用 'H'）
+    - to_period() 接受 'ME'（新版）也接受 'M'（旧版），新版优先 'ME'
+    - 所以这里只处理 M -> ME，H 保持 'H' 不变
+
+    :param freq: 频率别名字符串，支持带数字前缀的格式（如 '3M'）
+    :return: 标准化后的频率别名
+
+    >>> _normalize_freq_for_period("M")
+    'ME'
+    >>> _normalize_freq_for_period("3M")
+    '3ME'
+    >>> _normalize_freq_for_period("H")
+    'H'
+    """
+    import re
+    _freq = str(freq).strip()
+    if re.match(r'^\d*M$', _freq):
+        return _freq[:-1] + 'ME'
+    if _freq == 'M':
+        return 'ME'
+    return freq
+
+
 from functools import partial
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
@@ -1378,10 +1452,11 @@ def distribution_plot(data, date="date", target="target", save=None, figsize=(10
     if 'time' not in str(df[date].dtype):
         df[date] = pd.to_datetime(df[date])
 
+    _freq = _normalize_freq(freq)
     temp = df.set_index(date).assign(
         好样本=lambda x: (x[target] == 0).astype(int),
         坏样本=lambda x: (x[target] == 1).astype(int),
-    ).resample(freq).agg({"好样本": sum, "坏样本": sum})
+    ).resample(_freq).agg({"好样本": sum, "坏样本": sum})
 
     temp.index = [i.strftime("%Y-%m-%d") for i in temp.index]
 
@@ -1950,11 +2025,12 @@ def feature_summary(
             df_copy = df.copy()
             df_copy[psi_date_col] = pd.to_datetime(df_copy[psi_date_col])
 
-            if psi_freq == 'M':
-                df_copy['_period'] = df_copy[psi_date_col].dt.to_period('M').astype(str)
-            elif psi_freq == 'W':
+            _p_freq = _normalize_freq_for_period(psi_freq)
+            if _p_freq in ('ME', 'M'):
+                df_copy['_period'] = df_copy[psi_date_col].dt.to_period('ME').astype(str)
+            elif _p_freq in ('W',):
                 df_copy['_period'] = df_copy[psi_date_col].dt.to_period('W').astype(str)
-            elif psi_freq == 'Q':
+            elif _p_freq in ('Q',):
                 df_copy['_period'] = df_copy[psi_date_col].dt.to_period('Q').astype(str)
             else:
                 df_copy['_period'] = df_copy[psi_date_col].dt.date.astype(str)
@@ -2101,10 +2177,11 @@ def bin_trend_plot(
             if date_freq == 'D':
                 data['_date_group'] = data[date_col].dt.strftime('%Y-%m-%d')
             else:
-                data['_date_group'] = data[date_col].dt.to_period(date_freq).astype(str)
+                _p_freq = _normalize_freq_for_period(date_freq)
+                data['_date_group'] = data[date_col].dt.to_period(_p_freq).astype(str)
         except Exception:
             warnings.warn(f"无法识别 date_freq={date_freq}，已回退为按月分组")
-            data['_date_group'] = data[date_col].dt.to_period('M').astype(str)
+            data['_date_group'] = data[date_col].dt.to_period('ME').astype(str)
 
         dimension_cols.append('_date_group')
 

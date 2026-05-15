@@ -31,6 +31,28 @@ import pandas as pd
 from toad.metrics import KS, AUC, PSI
 
 
+# ==================== 日期频率兼容性 ====================
+def _period_freq(freq: str) -> str:
+    """将旧的 pandas 频率别名转换为 to_period() 支持的格式。
+
+    >>> _period_freq("M")
+    'ME'
+    >>> _period_freq("3M")
+    '3ME'
+    >>> _period_freq("H")
+    'H'
+    >>> _period_freq("ME")
+    'ME'
+    """
+    import re
+    _f = str(freq).strip()
+    if re.match(r'^\d*M$', _f):
+        return _f[:-1] + 'ME'
+    if _f == 'M':
+        return 'ME'
+    return _f
+
+
 # ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------
@@ -839,7 +861,7 @@ class QuickModelReport:
             if date_col not in ds.X.columns:
                 continue
             dates = pd.to_datetime(ds.X[date_col])
-            months = dates.dt.to_period("M")
+            months = dates.dt.to_period(_period_freq("M"))
             for month in sorted(months.unique()):
                 mask = months == month
                 y_m = ds.y[mask.values]
@@ -868,7 +890,7 @@ class QuickModelReport:
             if date_col not in ds.X.columns:
                 continue
             dates = pd.to_datetime(ds.X[date_col])
-            months = dates.dt.to_period("M")
+            months = dates.dt.to_period(_period_freq("M"))
             for month in sorted(months.unique()):
                 mask = months == month
                 key = str(month)
@@ -1232,23 +1254,23 @@ class QuickModelReport:
         end_row, _ = dataframe2excel(sample_df, writer, sheet_name=ws, start_row=end_row + 1, percent_cols=["坏样本率"])
 
         # 1.4 样本分布情况
-        freq_label_map = {"D": "日", "W": "周", "M": "月", "Q": "季度", "Y": "年"}
+        freq_label_map = {"D": "日", "W": "周", "M": "月", "ME": "月", "Q": "季度", "Y": "年"}
         if date_col or group_col:
             end_row, _ = writer.insert_value2sheet(ws, (end_row + 2, 2), value="4、样本分布情况", style="header_middle", align={"horizontal": "left"})
 
             if date_col:
-                period_labels = {"D": "日期", "W": "周", "M": "月份", "Q": "季度", "Y": "年份"}
-                freq = date_freq or "M"
-                period_label = period_labels.get(freq, "周期")
-                period_col_name = freq_label_map.get(freq, freq)
+                period_labels = {"D": "日期", "W": "周", "M": "月份", "ME": "月份", "Q": "季度", "Y": "年份"}
+                _raw_freq = date_freq or "M"
+                period_label = period_labels.get(_raw_freq, "周期")
+                period_col_name = freq_label_map.get(_raw_freq, _raw_freq)
 
                 for ds_key, ds in self._datasets.items():
                     if date_col in ds.X.columns:
                         dates = pd.to_datetime(ds.X[date_col])
                         try:
-                            periods = dates.dt.to_period(freq)
+                            periods = dates.dt.to_period(_period_freq(_raw_freq))
                         except Exception:
-                            periods = dates.dt.to_period("M")
+                            periods = dates.dt.to_period("ME")
 
                         period_stats = ds.y.groupby(periods).agg(["count", "sum", "mean"]).reset_index()
                         period_stats.columns = [period_label, "样本数", "坏样本数", "坏样本率"]
