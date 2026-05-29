@@ -2331,7 +2331,7 @@ def bin_trend_plot(
 
         try:
             bin_plot(
-                data=panel_df,
+                panel_df,
                 ax=ax,
                 title=panel_title,
                 colors=colors,
@@ -2379,7 +2379,7 @@ def batch_bin_trend_plot(
     date_freq: str = 'M',
     sort_by: str = 'iv',
     max_features: int = 10,
-    figsize_per_feature: tuple = (12, 4),
+    figsize: tuple = (15, 7),
     save_dir: Optional[str] = None,
     **kwargs
 ) -> dict:
@@ -2393,7 +2393,7 @@ def batch_bin_trend_plot(
     :param date_freq: 日期聚合频率
     :param sort_by: 排序指标，'iv'/'ks'
     :param max_features: 最大绘制特征数
-    :param figsize_per_feature: 每个特征的图尺寸
+    :param figsize: 每个特征的图尺寸
     :param save_dir: 保存目录
     :param kwargs: 其他参数传递给 bin_trend_plot
     :return: 特征名到 Figure 的字典
@@ -2438,7 +2438,7 @@ def batch_bin_trend_plot(
                 data, feature=feat, target=target,
                 dimension_cols=dimension_cols,
                 date_col=date_col, date_freq=date_freq,
-                figsize=figsize_per_feature,
+                figsize=figsize,
                 **kwargs
             )
 
@@ -2490,6 +2490,7 @@ def _get_stats_for_target(bin_table: pd.DataFrame, target_name: str) -> pd.DataF
 
     # 添加公共列
     col_mapping = {
+        '分箱': '分箱',
         '分箱标签': '分箱',
         '样本总数': '样本总数',
         '样本占比': '样本占比',
@@ -2514,7 +2515,7 @@ def _get_stats_for_target(bin_table: pd.DataFrame, target_name: str) -> pd.DataF
 
 
 def bin_overdues_plot(
-    data: pd.DataFrame,
+    data: Optional[pd.DataFrame] = None,
     feature: Optional[str] = None,
     overdue: Optional[List[str]] = None,
     dpds: Optional[List[int]] = None,
@@ -2541,8 +2542,9 @@ def bin_overdues_plot(
     :param data: 输入数据（原始数据模式）或分箱表（当传入 bin_table 时忽略）
     :param feature: 特征列名（原始数据模式需要）
     :param overdue: 逾期天数列名列表，如 ['dpd7', 'dpd15', 'dpd30']
-    :param dpds: 逾期阈值列表，与 overdue 一一对应，如 [1, 1, 1]
-        表示逾期天数>=该阈值时视为坏样本
+    :param dpds: 逾期阈值列表，与 overdue 使用笛卡尔积组合
+        如 overdue=['MOB1', 'MOB2'], dpds=[7, 0] 会生成 MOB1 7+、MOB1 0+、MOB2 7+、MOB2 0+ 四个标签
+        逾期天数>=dpd阈值时视为坏样本
     :param bin_table: 分箱表（来自 feature_bin_stats 的多级表头 DataFrame）
         传入后将直接使用分箱表绘图，忽略 data/overdue/dpds 参数
     :param method: 分箱方法，默认 'step'，可选 'chi', 'dt', 'quantile', 'step', 'kmeans', 'cart', 'mdlp', 'uniform'
@@ -2634,12 +2636,22 @@ def bin_overdues_plot(
                     ax.set_title(target_name)
                     continue
 
+                # 检查必需列是否存在
+                if '分箱' not in stats_df.columns:
+                    # 尝试从原始列名中获取分箱信息
+                    if ('分箱详情', '分箱') in bin_table.columns:
+                        stats_df['分箱'] = bin_table[('分箱详情', '分箱')].values
+                    elif ('分箱详情', '分箱标签') in bin_table.columns:
+                        stats_df['分箱'] = bin_table[('分箱详情', '分箱标签')].values
+                    else:
+                        raise ValueError("分箱表中没有找到分箱列")
+
                 # 格式化分箱标签
                 if '分箱' in stats_df.columns:
                     stats_df['分箱'] = stats_df['分箱'].apply(lambda x: format_bin_label(x, 35))
 
                 bin_plot(
-                    data=stats_df,
+                    stats_df,
                     ax=ax,
                     title=target_name,
                     colors=colors,
@@ -2685,15 +2697,22 @@ def bin_overdues_plot(
         return fig
 
     # 原始数据模式
+    if data is None:
+        raise ValueError("原始数据模式需要提供 data 参数")
     if feature is None:
         raise ValueError("原始数据模式需要提供 feature 参数")
     if overdue is None or dpds is None:
         raise ValueError("原始数据模式需要提供 overdue 和 dpds 参数")
 
-    if len(overdue) != len(dpds):
-        raise ValueError("overdue 和 dpds 长度必须一致")
+    # 转换为列表（支持标量或列表输入）
+    if not isinstance(overdue, list):
+        overdue = [overdue]
+    if not isinstance(dpds, list):
+        dpds = [dpds]
 
-    n_plots = len(overdue)
+    # 生成 overdue 和 dpds 的笛卡尔积，格式为 "col d+"
+    target_labels = [f"{col} {d}+" for col in overdue for d in dpds]
+    n_plots = len(target_labels)
 
     # 计算行列数
     n_cols = min(max_cols, n_plots)
@@ -2710,55 +2729,62 @@ def bin_overdues_plot(
         axes = np.array([axes])
     axes = axes.flatten() if n_plots > 1 else [axes]
 
-    # 计算全局分箱规则
-    global_rules = None
-    if shared_bins and rules is None:
-        _shared = str(shared_bins).lower()
-        if _shared == 'first':
-            ref_idx = 0
-        elif _shared == 'last':
-            ref_idx = len(overdue) - 1
-        else:  # 'max_samples' 或其他真值
-            valid_counts = []
-            for dpd_col, threshold in zip(overdue, dpds):
-                y_tmp = (data[dpd_col] >= threshold).astype(int)
-                valid_counts.append((~(pd.isna(data[feature]) | pd.isna(y_tmp))).sum())
-            ref_idx = int(np.argmax(valid_counts))
-
-        dpd_col = overdue[ref_idx]
-        threshold = dpds[ref_idx]
-        y = (data[dpd_col] >= threshold).astype(int)
-        valid_mask = ~(pd.isna(data[feature]) | pd.isna(y))
-        X_valid = data.loc[valid_mask, feature]
-        y_valid = y[valid_mask]
-
-        try:
-            combiner = Combiner(method=method, max_n_bins=max_n_bins, min_bin_size=min_bin_size)
-            combiner.fit(X_valid, y_valid)
-            splits = combiner.export()["rule"]
-            if feature in splits and splits[feature]:
-                global_rules = {feature: splits[feature]}
-        except Exception:
-            pass
-    elif rules is not None:
-        global_rules = rules
+    # 简化 shared_bins 逻辑：始终使用第一个标签拟合的分箱器
+    # 后续标签会复用相同的分箱边界，便于对比
+    # 注意：shared_bins 参数保留用于保持 API 兼容性，但实际行为已改为始终共享分箱
 
     # 绘制每个逾期定义的分箱图
     from .processing import feature_bin_stats
 
-    for idx, (dpd_col, threshold) in enumerate(zip(overdue, dpds)):
+    # 参考 feature_bin_stats 的逻辑：
+    # 第一个标签用于初始化和拟合 Combiner，后续标签复用相同的分箱规则
+    # 这样确保所有标签使用相同的分箱边界，便于对比
+
+    for idx, label in enumerate(target_labels):
         ax = axes[idx]
 
         try:
-            # 创建二元目标变量
-            y = (data[dpd_col] >= threshold).astype(int)
-            target_name = f"{dpd_col}>={threshold}"
+            # 解析标签获取列名和阈值
+            # 格式: "col d+" -> col="col", d=int(d)
+            parts = label.rsplit(' ', 1)
+            dpd_col = parts[0]
+            threshold = int(parts[1].replace('+', ''))
+
+            # 创建二元目标变量 (使用 > 与 feature_bin_stats 保持一致)
+            y = (data[dpd_col] > threshold).astype(int)
+            target_name = label  # 使用完整标签作为标题
 
             # 构建临时数据
             temp_df = data[[feature]].copy()
             temp_df['_target'] = y
 
-            # 计算分箱统计
+            # 参考 feature_bin_stats，第一个标签初始化 Combiner，后续复用
+            # 注意：这里不能直接把 rules 传给 feature_bin_stats，因为 feature_bin_stats 会用 rules 来调整分箱
+            # 我们只在第一个标签时拟合 Combiner 并导出规则，后续标签使用相同的分箱边界
+            combiner = None
+            if idx == 0:
+                # 第一个标签：初始化 Combiner 并拟合
+                from .processing import Combiner
+                if rules is not None and len(rules) > 0:
+                    if isinstance(rules, (list, np.ndarray)):
+                        adj_rules = {feature: rules}
+                    else:
+                        adj_rules = rules
+                else:
+                    adj_rules = None
+
+                combiner = Combiner(
+                    target='_target',
+                    adj_rules=adj_rules,
+                    method=method,
+                    empty_separate=True,
+                    min_n_bins=2,
+                    max_n_bins=max_n_bins,
+                    min_bin_size=min_bin_size,
+                )
+                combiner.fit(temp_df)
+
+            # 计算分箱统计（第一个标签传入 combiner，后续复用相同的规则）
             stats_df = feature_bin_stats(
                 temp_df,
                 feature,
@@ -2766,7 +2792,7 @@ def bin_overdues_plot(
                 method=method,
                 max_n_bins=max_n_bins,
                 min_bin_size=min_bin_size,
-                rules=global_rules.get(feature, None) if global_rules else None,
+                combiner=combiner,  # 第一个标签传入拟合好的 Combiner
                 empty_separate=True,
             )
 
@@ -2780,7 +2806,7 @@ def bin_overdues_plot(
                 stats_df['分箱'] = stats_df['分箱'].apply(lambda x: format_bin_label(x, 35))
 
             bin_plot(
-                data=stats_df,
+                stats_df,
                 ax=ax,
                 title=target_name,
                 colors=colors,

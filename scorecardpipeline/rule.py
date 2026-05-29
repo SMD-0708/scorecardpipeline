@@ -1250,7 +1250,7 @@ def sawpin_badrate_prediction_by_score(base: pd.DataFrame, test: pd.DataFrame, s
             result["LIFT值"] = 1.0
             result["坏账改善"] = 0.0
             result["风险拒绝比"] = 0.0
-            result = result[['样本总数', '样本占比', '坏样本数', '坏样本率', 'LIFT值']]
+            result = result[['样本总数', '样本占比', '坏样本数', '坏样本率', 'LIFT值', '坏账改善', '风险拒绝比']]
             if amount is not None:
                 swap_in_data_amount = result.copy()
                 return result, swap_in_data_amount
