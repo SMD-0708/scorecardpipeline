@@ -2090,7 +2090,7 @@ def bin_trend_plot(
     min_bin_size: float = 0.02,
     rules: Optional[dict] = None,
     special_values: Optional[List] = None,
-    shared_bins: Optional[Union[str, bool]] = 'max_samples',
+    shared_bins: Optional[Union[str, bool]] = 'all',
     sort_by: Optional[str] = None,
     sort_order: str = 'asc',
     max_groups: Optional[int] = None,
@@ -2120,10 +2120,11 @@ def bin_trend_plot(
     :param min_bin_size: 最小箱占比，默认0.02
     :param rules: 预定义分箱规则 {特征名: 分箱边界列表}
     :param special_values: 特殊值列表
-    :param shared_bins: 各分组是否共享同一切分点，默认 'max_samples'
+    :param shared_bins: 各分组是否共享同一切分点，默认 'all'
+        - 'all': 使用全量样本的切分点（默认）
         - 'first': 使用第一个分组（最早时间/第一个维度值）的切分点
         - 'last': 使用最后一个分组（最近时间/最后一个维度值）的切分点
-        - 'max_samples': 使用样本量最多的分组的切分点（默认）
+        - 'max_samples': 使用样本量最多的分组的切分点
         - False 或 None: 每个分组独立计算切分点
     :param sort_by: 排序列名，None表示不排序，默认按维度值排序
     :param sort_order: 排序方向，'asc'/'desc'
@@ -2195,39 +2196,56 @@ def bin_trend_plot(
 
     # 处理 shared_bins：从指定分组提取切分点，统一应用到所有分组
     if shared_bins and group_col is not None and rules is None:
-        groups = data[group_col].unique()
-        _sort_by = sort_by if (sort_by is not None and sort_by in data.columns) else None
-        if _sort_by is not None:
-            _group_order = data.groupby(group_col)[_sort_by].first().sort_values(
-                ascending=(sort_order == 'asc')
-            ).index.tolist()
-        else:
-            _group_order = sorted(groups)
-
         _shared_bins = str(shared_bins).lower()
-        if _shared_bins == 'first':
-            ref_group = _group_order[0] if _group_order else None
-        elif _shared_bins == 'last':
-            ref_group = _group_order[-1] if _group_order else None
-        else:  # 'max_samples' 或其他真值
-            group_sizes = data.groupby(group_col).size()
-            ref_group = group_sizes.idxmax()
 
-        if ref_group is not None:
-            from .processing import Combiner
-            ref_data = data[data[group_col] == ref_group]
-            _valid = ~(pd.isna(ref_data[feature]) | pd.isna(ref_data[target]))
-            X_ref = ref_data.loc[_valid, feature]
-            y_ref = ref_data.loc[_valid, target]
-            if len(X_ref) > 0:
+        if _shared_bins == 'all':
+            # 从全量样本计算切分点
+            _valid = ~(pd.isna(data[feature]) | pd.isna(data[target]))
+            X_all = data.loc[_valid, feature]
+            y_all = data.loc[_valid, target]
+            if len(X_all) > 0:
                 try:
+                    from .processing import Combiner
                     combiner = Combiner(method=method, max_n_bins=max_n_bins, min_bin_size=min_bin_size)
-                    combiner.fit(X_ref, y_ref)
+                    combiner.fit(X_all, y_all)
                     splits = combiner.export()["rule"]
                     if feature in splits and splits[feature]:
                         rules = {feature: splits[feature]}
                 except Exception:
                     pass  # 回退到独立分箱
+        else:
+            groups = data[group_col].unique()
+            _sort_by = sort_by if (sort_by is not None and sort_by in data.columns) else None
+            if _sort_by is not None:
+                _group_order = data.groupby(group_col)[_sort_by].first().sort_values(
+                    ascending=(sort_order == 'asc')
+                ).index.tolist()
+            else:
+                _group_order = sorted(groups)
+
+            if _shared_bins == 'first':
+                ref_group = _group_order[0] if _group_order else None
+            elif _shared_bins == 'last':
+                ref_group = _group_order[-1] if _group_order else None
+            else:  # 'max_samples' 或其他真值
+                group_sizes = data.groupby(group_col).size()
+                ref_group = group_sizes.idxmax()
+
+            if ref_group is not None:
+                from .processing import Combiner
+                ref_data = data[data[group_col] == ref_group]
+                _valid = ~(pd.isna(ref_data[feature]) | pd.isna(ref_data[target]))
+                X_ref = ref_data.loc[_valid, feature]
+                y_ref = ref_data.loc[_valid, target]
+                if len(X_ref) > 0:
+                    try:
+                        combiner = Combiner(method=method, max_n_bins=max_n_bins, min_bin_size=min_bin_size)
+                        combiner.fit(X_ref, y_ref)
+                        splits = combiner.export()["rule"]
+                        if feature in splits and splits[feature]:
+                            rules = {feature: splits[feature]}
+                    except Exception:
+                        pass  # 回退到独立分箱
 
     # 计算整体分箱统计
     def _compute_stats(df_subset, feat, tgt, _method, _max_bins, _min_bin, _rules, _special):
