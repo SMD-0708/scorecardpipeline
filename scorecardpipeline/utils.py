@@ -853,8 +853,10 @@ def bin_plot(feature_table, desc="", figsize=(14, 8), colors=None, save=None, an
                 text = str(bin_label).strip()
                 if text.startswith('(') or text.startswith('['):
                     left = text[1:].split(',')[0].strip()
-                    if left in ('-inf', '-∞'):
+                    if left in ('-inf', '-∞', '负无穷'):
                         return float('-inf')
+                    elif left in ('inf', '正无穷'):
+                        return float('inf')
                     return float(left)
             except:
                 pass
