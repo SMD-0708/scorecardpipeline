@@ -976,13 +976,27 @@ def bin_plot(feature_table, desc="", figsize=(14, 8), colors=None, save=None, an
                             ncol=len(labels1 + labels2), bbox_to_anchor=(0.5, anchor), frameon=False)
 
         plt.tight_layout()
+        ax_pos = ax1.get_position()
         if metric_summary:
             fig.canvas.draw()
-            ax_pos = ax1.get_position()
+            # 计算动态字体大小和内边距，基于图片尺寸
+            fig_width_inch = fig.get_figwidth()
+            fig_height_inch = fig.get_figheight()
+            # 字体大小与图片高度成比例，范围 [8, 14]
+            dyn_fontsize = min(14, max(8, fig_height_inch * 1.2))
+
+            # 方案1：放在图例下方（y方向跟随图例，避免遮挡图表）
+            # 先获取图例实际高度来确定位置
             legend_bbox = legend.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
-            fig.text(ax_pos.x0, legend_bbox.y0, metric_summary, ha='left', va='bottom',
-                     fontsize=10, color=axis_theme,
-                     bbox=dict(boxstyle='round,pad=0.28', facecolor='white', edgecolor=axis_theme, alpha=0.9, linewidth=0.8))
+            # 放在图例下方，留出一定间距
+            text_y = legend_bbox.y0 - 0.02  # 图例下方0.02 figure单位
+            text_x = ax_pos.x0  # 与ax1左对齐
+            # 确保text_y不低于0.02（图底部留白）
+            text_y = max(0.02, text_y)
+
+            fig.text(text_x, text_y, metric_summary, ha='left', va='top',
+                     fontsize=dyn_fontsize, color=axis_theme,
+                     bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=axis_theme, alpha=0.9, linewidth=0.8))
         save_figure(fig, save)
 
         if return_frame:
