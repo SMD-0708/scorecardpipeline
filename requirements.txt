@@ -18,7 +18,7 @@ optbinning
 graphviz>=0.20.1
 dtreeviz>=2.2.1
 category-encoders>=2.6.0
-sklearn_pandas
+sklearn-pandas
 sklearn2pmml
 pypmml
 joblib>=0.12
@@ -31,5 +31,4 @@ protobuf>=5.27.0
 dill
 svglib>=1.5.0
 reportlab
-# https://files.pythonhosted.org/packages/20/00/cd85e5eecd6244e4641b1ba149e9370d9ea9876f012bffa3b26d584290b0/toad-0.1.6.tar.gz
-toad<=0.1.5
+toad>0.1.5

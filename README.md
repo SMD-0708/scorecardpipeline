@@ -21,7 +21,7 @@
 > hscredit：https://github.com/hengshu-credit/hscredit
 
 
-> PS: *新注册账号请勿 `star` 本项目* , 短期内 `scorecardpipeline` 将同步 `hscredit` 的功能，待 `hscredit` 成熟后，本项目将不再维护
+> PS: 短期内 `scorecardpipeline` 将同步 `hscredit` 的功能，待 [`hscredit`](https://github.com/hengshu-credit/hscredit) 成熟后，本项目将不再维护
 
 
 ## 交流
