@@ -4,27 +4,8 @@
 @Author  : itlubber
 @Site    : itlubber.art
 """
-from toad.metrics import KS, AUC, F1, PSI
-from openpyxl.formatting.rule import ColorScaleRule
-from openpyxl.utils import get_column_letter, column_index_from_string
-from sklearn.pipeline import Pipeline, FeatureUnion, make_pipeline, make_union
-
-from .logger import init_logger
-from .utils import *
-from .processing import FeatureSelection, FeatureImportanceSelector, StepwiseSelection, Combiner, WOETransformer, feature_bin_stats, feature_efficiency_analysis
-from .model import ITLubberLogisticRegression, ScoreCard
-from .excel_writer import ExcelWriter, dataframe2excel
-from .auto_eda import auto_eda_sweetviz
-from .auto_report import auto_data_testing_report
-from .model_report import QuickModelReport, auto_model_report
-from .rule import Rule, ruleset_report, sawpin_badrate_prediction_by_score, bin_table_badrate_prediction, swapin_report, swapout_report
-from .rule_extraction import DecisionTreeRuleExtractor
-from .feature_engineering import NumExprDerive
-from .feature_selection import RFE, RFECV, SelectKBest, SelectFromModel, GenericUnivariateSelect, TypeSelector, RegexSelector, ModeSelector, NullSelector, InformationValueSelector, LiftSelector, VarianceSelector, VIFSelector, CorrSelector, PSISelector, NullImportanceSelector, TargetPermutationSelector, ExhaustiveSelector
-from .scorecard import StandardScoreTransformer, NPRoundStandardScoreTransformer, RoundStandardScoreTransformer, BoxCoxScoreTransformer
-
-
 __version__ = "0.1.39"
+
 __all__ = (
     "__version__"
     , "FeatureSelection", "FeatureImportanceSelector", "StepwiseSelection", "Combiner", "WOETransformer"
@@ -41,3 +22,77 @@ __all__ = (
     , "TypeSelector", "RegexSelector", "ModeSelector", "NullSelector", "InformationValueSelector", "LiftSelector"
     , "VarianceSelector", "VIFSelector", "CorrSelector", "PSISelector", "NullImportanceSelector", "TargetPermutationSelector", "ExhaustiveSelector"
 )
+
+
+def __getattr__(name):
+    """Lazy imports for better import performance."""
+    from sklearn.pipeline import Pipeline, FeatureUnion, make_pipeline, make_union
+    if name in ("Pipeline", "FeatureUnion", "make_pipeline", "make_union"):
+        return locals()[name]
+    
+    from openpyxl.formatting.rule import ColorScaleRule
+    from openpyxl.utils import get_column_letter, column_index_from_string
+    if name in ("ColorScaleRule", "get_column_letter", "column_index_from_string"):
+        return locals()[name]
+    
+    from toad.metrics import KS, AUC, F1, PSI
+    if name in ("KS", "AUC", "F1", "PSI"):
+        return locals()[name]
+    
+    from .logger import init_logger
+    if name == "init_logger":
+        return init_logger
+    
+    from .utils import init_setting, init_font_for_excel, get_excel_font_name, load_pickle, save_pickle, germancredit, seed_everything, feature_bins, extract_feature_bin, inverse_feature_bins, sample_lift_transformer, feature_describe, groupby_feature_describe, feature_summary
+    if name in ("init_setting", "init_font_for_excel", "get_excel_font_name", "load_pickle", "save_pickle", "germancredit", "seed_everything", "feature_bins", "extract_feature_bin", "inverse_feature_bins", "sample_lift_transformer", "feature_describe", "groupby_feature_describe", "feature_summary"):
+        return locals()[name]
+    
+    from .processing import FeatureSelection, FeatureImportanceSelector, StepwiseSelection, Combiner, WOETransformer, feature_bin_stats, feature_efficiency_analysis
+    if name in ("FeatureSelection", "FeatureImportanceSelector", "StepwiseSelection", "Combiner", "WOETransformer", "feature_bin_stats", "feature_efficiency_analysis"):
+        return locals()[name]
+    
+    from .model import ITLubberLogisticRegression, ScoreCard
+    if name in ("ITLubberLogisticRegression", "ScoreCard"):
+        return locals()[name]
+    
+    from .excel_writer import ExcelWriter, dataframe2excel
+    if name in ("ExcelWriter", "dataframe2excel"):
+        return locals()[name]
+    
+    from .auto_eda import auto_eda_sweetviz
+    if name == "auto_eda_sweetviz":
+        return auto_eda_sweetviz
+    
+    from .auto_report import auto_data_testing_report
+    if name == "auto_data_testing_report":
+        return auto_data_testing_report
+    
+    from .model_report import QuickModelReport, auto_model_report
+    if name in ("QuickModelReport", "auto_model_report"):
+        return locals()[name]
+    
+    from .rule import Rule, ruleset_report, sawpin_badrate_prediction_by_score, bin_table_badrate_prediction, swapin_report, swapout_report
+    if name in ("Rule", "ruleset_report", "sawpin_badrate_prediction_by_score", "bin_table_badrate_prediction", "swapin_report", "swapout_report"):
+        return locals()[name]
+    
+    from .rule_extraction import DecisionTreeRuleExtractor
+    if name == "DecisionTreeRuleExtractor":
+        return DecisionTreeRuleExtractor
+    
+    from .feature_engineering import NumExprDerive
+    if name == "NumExprDerive":
+        return NumExprDerive
+    
+    from .feature_selection import RFE, RFECV, SelectKBest, SelectFromModel, GenericUnivariateSelect, TypeSelector, RegexSelector, ModeSelector, NullSelector, InformationValueSelector, LiftSelector, VarianceSelector, VIFSelector, CorrSelector, PSISelector, NullImportanceSelector, TargetPermutationSelector, ExhaustiveSelector
+    if name in ("RFE", "RFECV", "SelectKBest", "SelectFromModel", "GenericUnivariateSelect", "TypeSelector", "RegexSelector", "ModeSelector", "NullSelector", "InformationValueSelector", "LiftSelector", "VarianceSelector", "VIFSelector", "CorrSelector", "PSISelector", "NullImportanceSelector", "TargetPermutationSelector", "ExhaustiveSelector"):
+        return locals()[name]
+    
+    from .scorecard import StandardScoreTransformer, NPRoundStandardScoreTransformer, RoundStandardScoreTransformer, BoxCoxScoreTransformer
+    if name in ("StandardScoreTransformer", "NPRoundStandardScoreTransformer", "RoundStandardScoreTransformer", "BoxCoxScoreTransformer"):
+        return locals()[name]
+    
+    from .utils import bin_plot, corr_plot, ks_plot, hist_plot, psi_plot, csi_plot, dataframe_plot, distribution_plot, bin_trend_plot, batch_bin_trend_plot, bin_overdues_plot
+    if name in ("bin_plot", "corr_plot", "ks_plot", "hist_plot", "psi_plot", "csi_plot", "dataframe_plot", "distribution_plot", "bin_trend_plot", "batch_bin_trend_plot", "bin_overdues_plot"):
+        return locals()[name]
+    
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

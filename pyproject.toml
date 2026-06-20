@@ -46,7 +46,12 @@ dependencies = [
     "cvxpy>=1.4.1",
     "protobuf>=5.27.0",
     "dill",
+    "ipython",
     "toad>=0.1.5",
+    "CairoSVG>=2.7.0",
+    "svglib>=1.5.0",
+    "reportlab",
+    "ipython",
 ]
 
 [project.optional-dependencies]

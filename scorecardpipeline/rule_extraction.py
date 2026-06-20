@@ -13,7 +13,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
-from IPython.display import display
+try:
+    from IPython.display import display
+except ImportError:
+    display = print
 from openpyxl.worksheet.worksheet import Worksheet
 
 import category_encoders as ce

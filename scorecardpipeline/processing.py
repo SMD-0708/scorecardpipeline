@@ -1112,8 +1112,12 @@ def feature_efficiency_analysis(data, feature, overdue=["MOB1"], dpd=[7, 3, 0], 
         ks_plot(data.dropna(subset=[feature])[feature], (data.dropna(subset=[feature])[overdue[0]] > dpd[0]).astype(int), figsize=(10, 6), save=save)
 
     if verbose:
-        from IPython.display import display
-        display(auto_feature_tables)
-        display(quantile_feature_tables)
+        try:
+            from IPython.display import display
+            display(auto_feature_tables)
+            display(quantile_feature_tables)
+        except ImportError:
+            print(auto_feature_tables)
+            print(quantile_feature_tables)
     else:
         return auto_feature_tables, quantile_feature_tables

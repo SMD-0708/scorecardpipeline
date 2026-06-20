@@ -32,3 +32,4 @@ dill
 svglib>=1.5.0
 reportlab
 toad>0.1.5
+ipython
