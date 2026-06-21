@@ -7,7 +7,7 @@ name = "scorecardpipeline"
 dynamic = ["version"]
 description = "评分卡pipeline建模包，封装toad、scorecardpy、optbinning等评分卡建模相关组件，API风格与sklearn高度一致，自持自定义模型报告输出"
 readme = {file = "README.md", content-type = "text/markdown"}
-license = "MIT"
+license = {text = "MIT"}
 authors = [{name = "itlubber", email = "itlubber@qq.com"}]
 urls = {Homepage = "https://github.com/itlubber/scorecardpipeline"}
 requires-python = ">=3.8"
@@ -48,7 +48,6 @@ dependencies = [
     "dill",
     "ipython",
     "toad>=0.1.5",
-    "CairoSVG>=2.7.0",
     "svglib>=1.5.0",
     "reportlab",
     "ipython",
