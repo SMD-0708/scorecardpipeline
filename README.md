@@ -87,18 +87,14 @@ https://github.com/itlubber/scorecardpipeline
 + `pipy` 安装
 
 ```bash
-# 安装核心依赖（最小化安装）
+# 安装（包含全部建模依赖）
 pip install scorecardpipeline
 
-# 安装所有可选能力（可视化、PMML、EDA、SHAP 解释性等）
-pip install "scorecardpipeline[all]"
+# 如需 SHAP 模型解释性功能
+pip install "scorecardpipeline[explain]"
 
-# 按需安装特定能力
-pip install "scorecardpipeline[graph]"   # 决策树可视化
-pip install "scorecardpipeline[pmml]"    # PMML 导出
-pip install "scorecardpipeline[eda]"     # 自动 EDA
-pip install "scorecardpipeline[explain]" # SHAP 解释性
-pip install "scorecardpipeline[dev]"     # 开发依赖
+# 开发与测试
+pip install "scorecardpipeline[dev]"
 ```
 
 + 源码编译

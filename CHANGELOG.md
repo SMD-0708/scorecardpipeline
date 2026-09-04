@@ -15,17 +15,19 @@
   - 兼容单概率、概率矩阵等多种输入形式。
 - **测试与 CI/CD**：
   - 新增 `tests/` 目录及完整回归测试（`pytest`），覆盖 processing、scorecard、model、rule、explainability、monitoring、calibration 等核心模块。
-  - 新增 GitHub Actions 工作流：多平台/多版本测试（`.github/workflows/tests.yml`）和代码风格检查（`.github/workflows/lint.yml`）。
+  - 新增 `tox.ini`，通过 tox 统一管理测试和 lint 环境。
+  - 新增 GitHub Actions 工作流（`.github/workflows/tests.yml`），使用 tox 在多平台/多 Python 版本下运行测试和 lint。
   - 新增 `.pre-commit-config.yaml`，集成 `ruff` 和 `black`。
-- **依赖治理**：
-  - 将 `pyproject.toml` 中的依赖拆分为 core / graph / pmml / eda / explain / dev / all 可选依赖组，降低最小化安装门槛。
+- **演示 Notebook**：
+  - 新增 `examples/advanced_features_demo.ipynb`，图文并茂展示 SHAP 解释、模型监控、概率校准功能，结果输出到 `examples/model_report/`。
 
 ### Fixed
 
-- 修复 `Combiner.load()` 加载离线规则后未设置 `fitted_` 的问题。
+- 修复 `Combiner.load()` 和 `WOETransformer.load()` 加载离线规则后未设置 `fitted_` 的问题。
 - 修复 `scorecard.py` 在 `scikit-learn >= 1.6` 环境下 `check_array` 参数不兼容的问题。
 
 ### Changed
 
-- 更新 `README.md`，补充按能力组安装命令示例。
+- `pyproject.toml` 依赖与原 `requirements.txt` 保持一致，不做过多拆分；仅 CairoSVG（需系统库）和 shap（新增功能）作为可选依赖。
+- 更新 `README.md` 安装说明。
 - 更新 `CLAUDE.md`，增加新模块架构说明。
