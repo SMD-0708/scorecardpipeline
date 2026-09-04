@@ -21,6 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+# 核心依赖：仅包含评分卡建模流程必需的最小集合
+# 较重的可视化/部署/EDA能力拆分到 optional-dependencies 中
 dependencies = [
     "pandas>=1.5",
     "matplotlib",
@@ -32,30 +34,48 @@ dependencies = [
     "ortools>=9.4",
     "ropwr>=1.0.0",
     "optbinning",
-    "graphviz>=0.20.1",
-    "dtreeviz>=2.2.1",
     "category-encoders>=2.6.0",
     "sklearn-pandas",
-    "sklearn2pmml",
-    "pypmml",
     "joblib>=0.12",
     "six>=1.15.0",
     "openpyxl>=3.0.10",
-    "sweetviz",
     "numexpr",
     "cvxpy>=1.4.1",
     "protobuf>=5.27.0",
     "dill",
-    "ipython",
     "toad>=0.1.5",
-    "svglib>=1.5.0",
-    "reportlab",
-    "ipython",
 ]
 
 [project.optional-dependencies]
-all = ["CairoSVG>=2.7.0", "svglib>=1.5.0", "reportlab"]
-graph = ["svglib>=1.5.0", "reportlab"]
+# 决策树/规则可视化相关依赖（较重，按需安装）
+graph = ["graphviz>=0.20.1", "dtreeviz>=2.2.1", "svglib>=1.5.0", "reportlab"]
+# SVG 转 PNG 推荐方案
+cairo = ["CairoSVG>=2.7.0"]
+# 模型部署相关
+pmml = ["sklearn2pmml", "pypmml"]
+# 自动 EDA
+eda = ["sweetviz"]
+# 模型解释性
+explain = ["shap>=0.42.0"]
+# 开发依赖
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff>=0.1.0",
+    "black>=23.0",
+    "mypy>=1.0",
+]
+# 安装所有可选依赖
+all = [
+    "CairoSVG>=2.7.0",
+    "graphviz>=0.20.1",
+    "dtreeviz>=2.2.1",
+    "svglib>=1.5.0",
+    "reportlab",
+    "sklearn2pmml",
+    "pypmml",
+    "sweetviz",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "scorecardpipeline.__version__"}
@@ -65,3 +85,40 @@ packages = ["scorecardpipeline"]
 
 [tool.setuptools.package-data]
 scorecardpipeline = ["*.ttf", "*.csv", "*.xlsx"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--disable-warnings",
+    "-p no:flask",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "pmml: marks tests that require PMML/java dependencies",
+    "graph: marks tests that require graphviz/dtreeviz dependencies",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+# UP009: 保留项目原有的 utf-8 编码声明风格
+# E501: 行长度由 black 处理
+ignore = ["E501", "UP009"]
+
+[tool.ruff.lint.pep8-naming]
+# 允许 sklearn 风格的 X, y 等参数名
+ignore-names = ["X", "Xt", "X_all", "X_ref", "X_valid", "X_inv", "woe_X", "A", "B", "sgn"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

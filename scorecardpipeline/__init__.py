@@ -19,6 +19,7 @@ __all__ = (
     , "ExcelWriter", "dataframe2excel", "auto_eda_sweetviz", "auto_data_testing_report", "QuickModelReport", "auto_model_report"
     , "RFE", "RFECV", "SelectKBest", "SelectFromModel", "GenericUnivariateSelect", "NumExprDerive"
     , "StandardScoreTransformer", "NPRoundStandardScoreTransformer", "RoundStandardScoreTransformer", "BoxCoxScoreTransformer"
+    , "ScorecardExplainer", "ModelMonitor", "ProbabilityCalibrator"
     , "TypeSelector", "RegexSelector", "ModeSelector", "NullSelector", "InformationValueSelector", "LiftSelector"
     , "VarianceSelector", "VIFSelector", "CorrSelector", "PSISelector", "NullImportanceSelector", "TargetPermutationSelector", "ExhaustiveSelector"
 )
@@ -90,7 +91,19 @@ def __getattr__(name):
     from .scorecard import StandardScoreTransformer, NPRoundStandardScoreTransformer, RoundStandardScoreTransformer, BoxCoxScoreTransformer
     if name in ("StandardScoreTransformer", "NPRoundStandardScoreTransformer", "RoundStandardScoreTransformer", "BoxCoxScoreTransformer"):
         return locals()[name]
-    
+
+    from .explainability import ScorecardExplainer
+    if name == "ScorecardExplainer":
+        return ScorecardExplainer
+
+    from .monitoring import ModelMonitor
+    if name == "ModelMonitor":
+        return ModelMonitor
+
+    from .calibration import ProbabilityCalibrator
+    if name == "ProbabilityCalibrator":
+        return ProbabilityCalibrator
+
     from .utils import bin_plot, corr_plot, ks_plot, hist_plot, psi_plot, csi_plot, dataframe_plot, distribution_plot, bin_trend_plot, batch_bin_trend_plot, bin_overdues_plot
     if name in ("bin_plot", "corr_plot", "ks_plot", "hist_plot", "psi_plot", "csi_plot", "dataframe_plot", "distribution_plot", "bin_trend_plot", "batch_bin_trend_plot", "bin_overdues_plot"):
         return locals()[name]
