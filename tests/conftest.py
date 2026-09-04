@@ -33,10 +33,12 @@ def train_test_data(raw_data):
 def woe_pipeline(train_test_data):
     """A minimal sklearn Pipeline that ends with WOE-encoded train/test data."""
     train, _ = train_test_data
-    pipeline = Pipeline([
-        ("select", FeatureSelection(target="creditability", engine="scorecardpy", iv=0.02)),
-        ("combiner", Combiner(target="creditability", method="chi", min_bin_size=0.05, max_n_bins=4)),
-        ("woe", WOETransformer(target="creditability")),
-    ])
+    pipeline = Pipeline(
+        [
+            ("select", FeatureSelection(target="creditability", engine="scorecardpy", iv=0.02)),
+            ("combiner", Combiner(target="creditability", method="chi", min_bin_size=0.05, max_n_bins=4)),
+            ("woe", WOETransformer(target="creditability")),
+        ]
+    )
     pipeline.fit(train)
     return pipeline

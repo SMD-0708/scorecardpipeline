@@ -60,9 +60,13 @@ def __getattr__(name):
     if name in ("ExcelWriter", "dataframe2excel"):
         return locals()[name]
     
-    from .auto_eda import auto_eda_sweetviz
-    if name == "auto_eda_sweetviz":
-        return auto_eda_sweetviz
+    try:
+        from .auto_eda import auto_eda_sweetviz
+        if name == "auto_eda_sweetviz":
+            return auto_eda_sweetviz
+    except ImportError:
+        if name == "auto_eda_sweetviz":
+            raise ImportError("auto_eda_sweetviz requires 'sweetviz'. Install with: pip install sweetviz")
     
     from .auto_report import auto_data_testing_report
     if name == "auto_data_testing_report":
@@ -76,9 +80,13 @@ def __getattr__(name):
     if name in ("Rule", "ruleset_report", "sawpin_badrate_prediction_by_score", "bin_table_badrate_prediction", "swapin_report", "swapout_report"):
         return locals()[name]
     
-    from .rule_extraction import DecisionTreeRuleExtractor
-    if name == "DecisionTreeRuleExtractor":
-        return DecisionTreeRuleExtractor
+    try:
+        from .rule_extraction import DecisionTreeRuleExtractor
+        if name == "DecisionTreeRuleExtractor":
+            return DecisionTreeRuleExtractor
+    except ImportError:
+        if name == "DecisionTreeRuleExtractor":
+            raise ImportError("DecisionTreeRuleExtractor requires 'dtreeviz' and 'graphviz'.")
     
     from .feature_engineering import NumExprDerive
     if name == "NumExprDerive":

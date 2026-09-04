@@ -10,11 +10,13 @@ from scorecardpipeline.rule import Rule, ruleset_report
 class TestRule:
     @pytest.fixture
     def sample_df(self):
-        return pd.DataFrame({
-            "age": [20, 30, 40, 50],
-            "income": [3000, 5000, 8000, 12000],
-            "target": [0, 1, 0, 1],
-        })
+        return pd.DataFrame(
+            {
+                "age": [20, 30, 40, 50],
+                "income": [3000, 5000, 8000, 12000],
+                "target": [0, 1, 0, 1],
+            }
+        )
 
     def test_rule_and_or(self, sample_df):
         rule = Rule("age > 25") & Rule("income > 4000")

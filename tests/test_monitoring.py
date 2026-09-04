@@ -12,18 +12,22 @@ class TestModelMonitor:
     @pytest.fixture
     def reference_data(self):
         np.random.seed(42)
-        return pd.DataFrame({
-            "feature_a": np.random.normal(0, 1, 500),
-            "feature_b": np.random.normal(5, 2, 500),
-        })
+        return pd.DataFrame(
+            {
+                "feature_a": np.random.normal(0, 1, 500),
+                "feature_b": np.random.normal(5, 2, 500),
+            }
+        )
 
     @pytest.fixture
     def current_data(self):
         np.random.seed(43)
-        return pd.DataFrame({
-            "feature_a": np.random.normal(0.5, 1.2, 300),
-            "feature_b": np.random.normal(5, 2, 300),
-        })
+        return pd.DataFrame(
+            {
+                "feature_a": np.random.normal(0.5, 1.2, 300),
+                "feature_b": np.random.normal(5, 2, 300),
+            }
+        )
 
     def test_score_psi(self, reference_data, current_data):
         monitor = ModelMonitor(score_bins=10)

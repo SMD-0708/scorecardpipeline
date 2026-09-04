@@ -7,8 +7,15 @@ import pytest
 from scorecardpipeline.explainability import ScorecardExplainer
 from scorecardpipeline.model import ITLubberLogisticRegression
 
+try:
+    import shap  # noqa: F401
 
-@pytest.mark.skipif(not ScorecardExplainer, reason="shap not installed")
+    HAS_SHAP = True
+except ImportError:
+    HAS_SHAP = False
+
+
+@pytest.mark.skipif(not HAS_SHAP, reason="shap not installed")
 class TestScorecardExplainer:
     @pytest.fixture
     def trained_explainer(self, woe_pipeline, train_test_data):
